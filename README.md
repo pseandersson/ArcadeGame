@@ -22,6 +22,30 @@
 12. [Tools & Setup](#-tools--setup)
 13. [Art Style Reference](#-art-style-reference)
 14. [Contributing](#-contributing)
+15. [Documentation](#-documentation)
+
+---
+
+## 🚦 Current Status
+
+> **Phase 1 — Prototype** is ready to begin in Unity.
+
+All core scripts and the sonar shader have been scaffolded. The codebase compiles and is ready to be imported into a Unity URP project.
+
+| System                 | Status      | Key Files                                                                                |
+| ---------------------- | ----------- | ---------------------------------------------------------------------------------------- |
+| **Project Setup**      | ✅ Complete | `.gitignore`                                                                             |
+| **Core Event System**  | ✅ Complete | `NoiseEventBus.cs`, `GameManager.cs`, `ScoreManager.cs`                                  |
+| **Sonar System**       | ✅ Complete | `SonarPulse.cs`, `SonarManager.cs`, `SonarRendererFeature.cs`, `SonarPostProcess.shader` |
+| **Player**             | ✅ Complete | `PlayerController.cs`, `NoiseEmitter.cs`                                                 |
+| **Guard AI**           | ✅ Complete | `GuardStateMachine.cs`, `GuardHearing.cs`, `GuardPatrol.cs`                              |
+| **Environment**        | ✅ Complete | `AmbientNoiseSource.cs`, `Collectible.cs`                                                |
+| **UI**                 | ✅ Complete | `HUDController.cs`                                                                       |
+| **Unity Project Init** | ⬜ Pending  | Requires manual Unity setup — see [Documentation](documentation.md)                      |
+| **Test Scene**         | ⬜ Pending  | Build first test room in Unity                                                           |
+| **Art / Audio**        | ⬜ Pending  | Phase 3                                                                                  |
+
+> 📄 **For full setup instructions and development history, see [documentation.md](documentation.md).**
 
 ---
 
