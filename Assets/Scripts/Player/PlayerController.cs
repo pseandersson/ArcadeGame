@@ -38,6 +38,7 @@ namespace EchoThief.Player
         private NoiseEmitter _noiseEmitter;
 
         private Vector3 _moveInput;
+        private Vector3 _lastMoveDir = Vector3.forward; // tracks last non-zero direction for throw
         private bool _isRunning;
         private float _pingTimer;
         private float _runPulseTimer;
@@ -66,6 +67,10 @@ namespace EchoThief.Player
             float h = Input.GetAxisRaw("Horizontal");
             float v = Input.GetAxisRaw("Vertical");
             _moveInput = new Vector3(h, 0f, v).normalized;
+
+            // Track last non-zero direction so throw always goes the right way
+            if (_moveInput.magnitude > 0.1f)
+                _lastMoveDir = _moveInput;
 
             _isRunning = Input.GetKey(KeyCode.LeftShift) && _moveInput.magnitude > 0.1f;
 
@@ -155,7 +160,8 @@ namespace EchoThief.Player
 
             _noiseMakerCount--;
 
-            Vector3 throwDir = _moveInput.magnitude > 0.1f ? _moveInput : transform.forward;
+            // Use current input if moving, otherwise use last known direction
+            Vector3 throwDir = _moveInput.magnitude > 0.1f ? _moveInput : _lastMoveDir;
             Vector3 spawnPos = transform.position + throwDir * 1f + Vector3.up * 0.5f;
 
             GameObject noiseMaker = Object.Instantiate(_noiseMakerPrefab, spawnPos, Quaternion.identity);
