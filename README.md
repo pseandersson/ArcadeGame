@@ -601,13 +601,13 @@ The HUD should be nearly invisible. Information is communicated through the game
 
 **Goal:** Prove the sonar mechanic is fun.
 
-- [ ] Set up Unity project with URP
+- [x] Set up Unity project with URP
 - [x] Implement basic player movement (WASD, top-down)
-- [ ] Create the **Sonar Shader** (even a basic version)
-- [ ] Implement `SonarPulse` + `SonarManager` (spawn, expand, fade)
-- [ ] Wire clap/ping input to spawn sonar pulses
-- [ ] Create a simple test room with walls and objects
-- [ ] **Playtest milestone:** Move around a dark room using only sonar pings
+- [x] Create the **Sonar Shader** (even a basic version)
+- [x] Implement `SonarPulse` + `SonarManager` (spawn, expand, fade)
+- [x] Wire clap/ping input to spawn sonar pulses
+- [x] Create a simple test room with walls and objects
+- [x] **Playtest milestone:** Move around a dark room using only sonar pings
 
 ### Phase 2 — Core Gameplay (Week 3–4) 🟡
 
