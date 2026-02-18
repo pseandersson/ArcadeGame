@@ -602,6 +602,7 @@ GameObject:
   - component: {fileID: 961739752}
   - component: {fileID: 961739751}
   - component: {fileID: 961739750}
+  - component: {fileID: 961739754}
   m_Layer: 0
   m_Name: Main Camera
   m_TagString: MainCamera
@@ -692,6 +693,27 @@ Camera:
   m_AllowDynamicResolution: 0
   m_ForceIntoRT: 0
   m_OcclusionCulling: 1
+--- !u!114 &961739754
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 961739749}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 3f8a1c9d2e4b7f6a8c5d9e2f1a3b4c5d, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: EchoThief::EchoThief.CameraFollow
+  _target: {fileID: 32506310}
+  _offset: {x: 0, y: 20, z: 0}
+  _smoothTime: 0.3
+  _zoomTransitionTime: 1
+  _useBounds: 1
+  _minX: -15
+  _maxX: 15
+  _minZ: -15
+  _maxZ: 15
 --- !u!4 &961739753
 Transform:
   m_ObjectHideFlags: 0
