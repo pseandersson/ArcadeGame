@@ -7,6 +7,7 @@ namespace EchoThief.AI
     /// <summary>
     /// Guard AI state machine with 4 states: Patrol, Suspicious, Alerted, Chasing.
     /// Phase 2: Added footstep sonar emission while moving.
+    ///          Wired GuardPatrol component so guard walks waypoints in Patrol state.
     /// </summary>
     [RequireComponent(typeof(NavMeshAgent))]
     public class GuardStateMachine : MonoBehaviour
@@ -32,32 +33,45 @@ namespace EchoThief.AI
         [SerializeField] private Color _footstepColor = new Color(1f, 0.24f, 0f, 1f); // Red-orange
 
         private NavMeshAgent _agent;
-        private Transform _playerTransform;
-        private GuardState _currentState = GuardState.Patrol;
-        private Vector3 _lastKnownPlayerPos;
-        private float _stateTimer;
-        private float _footstepTimer;
+        private GuardPatrol  _guardPatrol;           // Phase 2: wired patrol
+        private Transform    _playerTransform;
+        private GuardState   _currentState = GuardState.Patrol;
+        private Vector3      _lastKnownPlayerPos;
+        private float        _stateTimer;
+        private float        _footstepTimer;
 
-        public GuardState CurrentState => _currentState;
-        public bool IsPatrolling => _currentState == GuardState.Patrol;
+        public GuardState CurrentState  => _currentState;
+        public bool       IsPatrolling  => _currentState == GuardState.Patrol;
 
         private void Awake()
         {
-            _agent = GetComponent<NavMeshAgent>();
+            _agent       = GetComponent<NavMeshAgent>();
+            _guardPatrol = GetComponent<GuardPatrol>();
+
             _playerTransform = GameObject.FindGameObjectWithTag("Player")?.transform;
 
             if (_playerTransform == null)
                 Debug.LogWarning("[GuardStateMachine] Player not found! Guard AI will not function.");
+
+            if (_guardPatrol == null)
+                Debug.LogWarning("[GuardStateMachine] No GuardPatrol component found. Guard will not walk waypoints.");
+        }
+
+        private void Start()
+        {
+            // Kick off initial patrol destination once NavMesh is ready
+            if (_guardPatrol != null && _agent.isOnNavMesh)
+                _guardPatrol.SetDestination(_agent);
         }
 
         private void Update()
         {
             if (_playerTransform == null) return;
 
-            // Update state timer
+            // Tick state timer
             _stateTimer -= Time.deltaTime;
 
-            // Check for player caught
+            // Check catch
             float distToPlayer = Vector3.Distance(transform.position, _playerTransform.position);
             if (distToPlayer < _catchDistance)
             {
@@ -65,7 +79,7 @@ namespace EchoThief.AI
                 return;
             }
 
-            // State timeout logic
+            // State timeout fallback → return to Patrol
             if (_stateTimer <= 0f)
             {
                 switch (_currentState)
@@ -79,10 +93,7 @@ namespace EchoThief.AI
                 }
             }
 
-            // Execute state behavior
             ExecuteStateBehavior();
-
-            // Phase 2: Emit footstep sonar while moving
             EmitFootstepsIfMoving();
         }
 
@@ -91,25 +102,27 @@ namespace EchoThief.AI
             switch (_currentState)
             {
                 case GuardState.Patrol:
-                    _agent.speed = _patrolSpeed;
-                    // GuardPatrol component handles waypoint movement
+                    _agent.speed     = _patrolSpeed;
+                    _agent.isStopped = false;
+                    // Delegate waypoint logic to GuardPatrol
+                    if (_guardPatrol != null)
+                        _guardPatrol.UpdatePatrol(_agent);
                     break;
 
                 case GuardState.Suspicious:
-                    _agent.speed = _suspiciousSpeed;
+                    _agent.speed     = _suspiciousSpeed;
                     _agent.isStopped = true;
-                    // Look around (rotation handled elsewhere)
                     break;
 
                 case GuardState.Alerted:
-                    _agent.speed = _alertedSpeed;
+                    _agent.speed     = _alertedSpeed;
                     _agent.isStopped = false;
                     if (_agent.destination != _lastKnownPlayerPos)
                         _agent.SetDestination(_lastKnownPlayerPos);
                     break;
 
                 case GuardState.Chasing:
-                    _agent.speed = _chaseSpeed;
+                    _agent.speed     = _chaseSpeed;
                     _agent.isStopped = false;
                     _agent.SetDestination(_playerTransform.position);
                     break;
@@ -121,12 +134,11 @@ namespace EchoThief.AI
         }
 
         /// <summary>
-        /// Phase 2 Addition: Emit red sonar pulses while guard is moving.
+        /// Phase 2: Emit red sonar pulses from guard footsteps while moving.
         /// Creates the "guards are visible via their footsteps" gameplay mechanic.
         /// </summary>
         private void EmitFootstepsIfMoving()
         {
-            // Only emit if moving (velocity magnitude > threshold)
             if (_agent.velocity.magnitude < 0.1f)
             {
                 _footstepTimer = 0f;
@@ -137,17 +149,17 @@ namespace EchoThief.AI
             if (_footstepTimer <= 0f)
             {
                 NoiseEventBus.EmitNoise(new NoiseEvent(
-                    origin: transform.position,
-                    loudness: 0.3f,  // Quieter than player run (0.7)
+                    origin:      transform.position,
+                    loudness:    0.3f,
                     sonarRadius: _footstepSonarRadius,
-                    sonarColor: _footstepColor,
-                    source: gameObject
+                    sonarColor:  _footstepColor,
+                    source:      gameObject
                 ));
                 _footstepTimer = _footstepInterval;
             }
         }
 
-        /// <summary>Called by GuardHearing when noise is heard.</summary>
+        /// <summary>Called by GuardHearing when a noise is heard.</summary>
         public void OnNoiseHeard(Vector3 perceivedOrigin, float loudness)
         {
             _lastKnownPlayerPos = perceivedOrigin;
@@ -160,18 +172,18 @@ namespace EchoThief.AI
                     break;
 
                 case GuardState.Suspicious:
-                    // Heard more noise — escalate to Alerted
+                    // Second noise while suspicious → escalate
                     TransitionTo(GuardState.Alerted);
                     _stateTimer = _alertedTimeout;
                     break;
 
                 case GuardState.Alerted:
-                    // Already investigating — update target and reset timer
+                    // Already investigating — refresh target and timer
                     _stateTimer = _alertedTimeout;
                     break;
 
                 case GuardState.Chasing:
-                    // Already chasing — don't downgrade
+                    // Don't downgrade from chase
                     break;
             }
         }
@@ -180,21 +192,29 @@ namespace EchoThief.AI
         {
             if (_currentState == newState) return;
 
-            Debug.Log($"[Guard] {_currentState} → {newState}");
+            Debug.Log($"[Guard {name}] {_currentState} → {newState}");
             _currentState = newState;
 
-            // Reset agent on state entry
             switch (newState)
             {
                 case GuardState.Patrol:
                     _agent.isStopped = false;
+                    // Resume patrol from wherever we are
+                    if (_guardPatrol != null)
+                    {
+                        _guardPatrol.ResumePatrol();
+                        _guardPatrol.SetDestination(_agent);
+                    }
                     break;
+
                 case GuardState.Suspicious:
                     _agent.isStopped = true;
                     break;
+
                 case GuardState.Alerted:
                     _agent.isStopped = false;
                     break;
+
                 case GuardState.Chasing:
                     _agent.isStopped = false;
                     break;
@@ -215,15 +235,15 @@ namespace EchoThief.AI
 #if UNITY_EDITOR
         private void OnDrawGizmosSelected()
         {
-            // Draw catch radius
+            // Catch radius
             Gizmos.color = Color.red;
             Gizmos.DrawWireSphere(transform.position, _catchDistance);
 
-            // Draw footstep sonar radius
+            // Footstep sonar radius
             Gizmos.color = _footstepColor;
             Gizmos.DrawWireSphere(transform.position, _footstepSonarRadius);
 
-            // Draw last known player position
+            // Last known player position
             if (_lastKnownPlayerPos != Vector3.zero)
             {
                 Gizmos.color = Color.yellow;

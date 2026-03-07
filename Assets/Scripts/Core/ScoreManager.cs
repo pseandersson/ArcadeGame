@@ -6,24 +6,27 @@ namespace EchoThief.Core
     /// <summary>
     /// Tracks scoring components per level. Singleton.
     /// Fires UnityEvents when counts change for UI updates.
+    /// 
+    /// Phase 2: Auto-starts the level timer on Start() so the HUD initialises
+    /// correctly even when GameManager doesn't explicitly call StartLevel().
     /// </summary>
     public class ScoreManager : MonoBehaviour
     {
         public static ScoreManager Instance { get; private set; }
 
         [Header("Score Values")]
-        [SerializeField] private int _artifactPoints    = 1000;
-        [SerializeField] private int _gemPoints         = 100;
-        [SerializeField] private int _pingPenalty       = 10;
-        [SerializeField] private int _ghostBonus        = 500;
-        [SerializeField] private int _timeBonusPerSecond = 5;
-        [SerializeField] private float _parTime         = 120f;
+        [SerializeField] private int   _artifactPoints     = 1000;
+        [SerializeField] private int   _gemPoints          = 100;
+        [SerializeField] private int   _pingPenalty        = 10;
+        [SerializeField] private int   _ghostBonus         = 500;
+        [SerializeField] private int   _timeBonusPerSecond = 5;
+        [SerializeField] private float _parTime            = 120f;
 
         [Header("Events (UnityEvents for UI)")]
-        public UnityEvent<int> OnGemCountChanged = new UnityEvent<int>();
-        public UnityEvent<int> OnPingCountChanged = new UnityEvent<int>();
+        public UnityEvent<int> OnGemCountChanged      = new UnityEvent<int>();
+        public UnityEvent<int> OnPingCountChanged     = new UnityEvent<int>();
         public UnityEvent<int> OnArtifactCountChanged = new UnityEvent<int>();
-        public UnityEvent<int> OnScoreChanged = new UnityEvent<int>();
+        public UnityEvent<int> OnScoreChanged         = new UnityEvent<int>();
 
         private int   _score;
         private int   _pingCount;
@@ -44,17 +47,34 @@ namespace EchoThief.Core
             Instance = this;
         }
 
+        private void Start()
+        {
+            // Auto-start so the HUD and timer work even in standalone test scenes
+            // that don't go through GameManager.LoadLevel().
+            // GameManager.SetState(Playing) should call StartLevel() explicitly in
+            // production; calling it here is safe because StartLevel() is idempotent.
+            if (!_isRunning)
+            {
+                StartLevel();
+            }
+        }
+
         private void Update()
         {
             if (_isRunning) _levelTime += Time.deltaTime;
         }
 
+        /// <summary>Reset all counters and begin the level timer.</summary>
         public void StartLevel()
         {
-            _score = 0; _pingCount = 0; _gemsCollected = 0;
-            _artifactsCollected = 0; _levelTime = 0f; _isRunning = true;
-            
-            // Fire initial events
+            _score              = 0;
+            _pingCount          = 0;
+            _gemsCollected      = 0;
+            _artifactsCollected = 0;
+            _levelTime          = 0f;
+            _isRunning          = true;
+
+            // Fire initial events so UI starts at correct "zero" state
             OnScoreChanged?.Invoke(_score);
             OnPingCountChanged?.Invoke(_pingCount);
             OnGemCountChanged?.Invoke(_gemsCollected);
@@ -79,7 +99,7 @@ namespace EchoThief.Core
             _score += _gemPoints;
             OnGemCountChanged?.Invoke(_gemsCollected);
             OnScoreChanged?.Invoke(_score);
-            Debug.Log($"[Score] Gem collected. Score: {_score} (+{_gemPoints})");
+            Debug.Log($"[Score] Gem collected #{_gemsCollected}. Score: {_score} (+{_gemPoints})");
         }
 
         public void AddArtifact()
@@ -88,7 +108,7 @@ namespace EchoThief.Core
             _score += _artifactPoints;
             OnArtifactCountChanged?.Invoke(_artifactsCollected);
             OnScoreChanged?.Invoke(_score);
-            Debug.Log($"[Score] Artifact collected. Score: {_score} (+{_artifactPoints})");
+            Debug.Log($"[Score] Artifact collected #{_artifactsCollected}. Score: {_score} (+{_artifactPoints})");
         }
 
         public int ComputeFinalScore()
@@ -98,7 +118,7 @@ namespace EchoThief.Core
             // Ghost bonus: never pinged
             if (_pingCount == 0) final += _ghostBonus;
 
-            // Time bonus
+            // Time bonus for finishing under par time
             float timeDelta = _parTime - _levelTime;
             if (timeDelta > 0) final += Mathf.FloorToInt(timeDelta * _timeBonusPerSecond);
 
@@ -109,13 +129,13 @@ namespace EchoThief.Core
 
         public void ResetLevel()
         {
-            _score = 0;
-            _pingCount = 0;
-            _gemsCollected = 0;
+            _score              = 0;
+            _pingCount          = 0;
+            _gemsCollected      = 0;
             _artifactsCollected = 0;
-            _levelTime = 0f;
-            _isRunning = false;
-            
+            _levelTime          = 0f;
+            _isRunning          = false;
+
             OnScoreChanged?.Invoke(0);
             OnPingCountChanged?.Invoke(0);
             OnGemCountChanged?.Invoke(0);
