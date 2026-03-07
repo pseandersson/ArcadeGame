@@ -40,9 +40,6 @@ namespace EchoThief.Core
         [Tooltip("Seconds to wait after being caught before reloading.")]
         [SerializeField] private float _gameOverRestartDelay = 3f;
 
-        [Tooltip("Seconds to wait after reaching the exit before loading the next level (or restarting).")]
-        [SerializeField] private float _levelCompleteRestartDelay = 3f;
-
         private GameState _currentState = GameState.MainMenu;
         public GameState CurrentState => _currentState;
 
@@ -106,7 +103,7 @@ namespace EchoThief.Core
                         int final = ScoreManager.Instance.ComputeFinalScore();
                         Debug.Log($"[GameManager] Level complete! Final score: {final}");
                     }
-                    StartCoroutine(NextLevelAfterDelay(_levelCompleteRestartDelay));
+                    // No auto-reload — overlay stays until player quits or editor is stopped.
                     break;
             }
 
@@ -236,7 +233,7 @@ namespace EchoThief.Core
             var subGO = new GameObject("SubText");
             subGO.transform.SetParent(canvasGO.transform, false);
             var sub = subGO.AddComponent<Text>();
-            sub.text = "returning to level...";
+            sub.text = "you escaped with the gem";
             sub.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
             sub.fontSize = 36;
             sub.alignment = TextAnchor.MiddleCenter;
@@ -266,10 +263,6 @@ namespace EchoThief.Core
             RestartLevel();
         }
 
-        private IEnumerator NextLevelAfterDelay(float delay)
-        {
-            yield return new WaitForSecondsRealtime(delay);
-            NextLevel();
-        }
+
     }
 }
