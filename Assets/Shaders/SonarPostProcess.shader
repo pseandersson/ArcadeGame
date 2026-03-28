@@ -121,11 +121,14 @@ Shader "EchoThief/SonarPostProcess"
                     float ringInner = smoothstep(radius - _SonarArcThickness, radius - _SonarArcThickness * 0.5, dist);
                     float ringOuter = 1.0 - smoothstep(radius + _SonarArcThickness * 0.5, radius + _SonarArcThickness, dist);
                     float ring = ringInner * ringOuter;
-                    float trail = saturate(1.0 - (dist / (radius + 0.001))) * 0.15;
+                    float trail = 0.0;
 
                     float visibility = (ring + trail) * fade * angleMask;
-                    totalVisibility += visibility;
-                    finalColor += pulseColor * visibility * _GlowIntensity;
+                    if (visibility > totalVisibility)
+                    {
+                        totalVisibility = visibility;
+                        finalColor = pulseColor * visibility * _GlowIntensity;
+                    }
                 }
 
                 totalVisibility = saturate(totalVisibility);

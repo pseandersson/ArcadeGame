@@ -28,20 +28,21 @@ namespace EchoThief.Sonar
             Color = color;
         }
 
-        public float CurrentLoudness
+        public float Fade
         {
             get
             {
-                float expansion = Mathf.Max(Radius - InitialRadius, 0f);
-                return InitialLoudness / Mathf.Max(expansion * expansion, 1f);
+                float totalTravel = Mathf.Max(MaxRadius - InitialRadius, 0.001f);
+                float travelled = Mathf.Clamp(Radius - InitialRadius, 0f, totalTravel);
+                return Mathf.Clamp01(1f - travelled / totalTravel) * InitialLoudness;
             }
         }
 
-        public float Fade => Mathf.Clamp01(CurrentLoudness);
+        public float CurrentLoudness => Fade;
 
         public bool IsAlive(float loudnessThreshold)
         {
-            return Radius <= MaxRadius && CurrentLoudness >= loudnessThreshold;
+            return Radius < MaxRadius && Fade >= loudnessThreshold;
         }
 
         public void Advance(float deltaTime, float expansionSpeed)
