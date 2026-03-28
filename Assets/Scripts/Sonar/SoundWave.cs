@@ -28,7 +28,15 @@ namespace EchoThief.Sonar
             Color = color;
         }
 
-        public float CurrentLoudness => InitialLoudness / Mathf.Max(Radius * Radius, 1f);
+        public float CurrentLoudness
+        {
+            get
+            {
+                float expansion = Mathf.Max(Radius - InitialRadius, 0f);
+                return InitialLoudness / Mathf.Max(expansion * expansion, 1f);
+            }
+        }
+
         public float Fade => Mathf.Clamp01(CurrentLoudness);
 
         public bool IsAlive(float loudnessThreshold)

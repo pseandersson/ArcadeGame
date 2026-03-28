@@ -50,6 +50,12 @@ namespace EchoThief.Sonar
                 End = NormalizeAngle(end);
             }
 
+            public ArcInterval(float start, float end, bool normalize)
+            {
+                Start = normalize ? NormalizeAngle(start) : start;
+                End = normalize ? NormalizeAngle(end) : end;
+            }
+
             public float Length
             {
                 get
@@ -249,8 +255,8 @@ namespace EchoThief.Sonar
                 yield break;
             }
 
-            yield return new ArcInterval(interval.Start, TwoPi);
-            yield return new ArcInterval(0f, interval.End);
+            yield return new ArcInterval(interval.Start, TwoPi, false);
+            yield return new ArcInterval(0f, interval.End, false);
         }
 
         private static void AddSubtraction(List<ArcInterval> result, ArcInterval source, ArcInterval block)

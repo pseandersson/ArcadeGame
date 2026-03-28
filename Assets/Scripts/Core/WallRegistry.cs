@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 using EchoThief.Sonar;
 
 namespace EchoThief.Core
@@ -28,7 +29,14 @@ namespace EchoThief.Core
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void InitializeOnLoad()
         {
-            EnsureInitialized();
+            SceneManager.sceneLoaded += OnSceneLoaded;
+        }
+
+        private static void OnSceneLoaded(Scene scene, LoadSceneMode mode)
+        {
+            _initialized = false;
+            _wallFaces.Clear();
+            BuildRegistryInternal(0.2f);
         }
 
         private void Awake()
