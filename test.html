@@ -21,7 +21,7 @@
     <button id="addWall">Add Wall</button>
     <button id="clearWalls">Clear Walls</button>
     <button id="pulse">Pulse (Space)</button>
-    <label>Radius: <input type="range" id="radiusSlider" min="10" max="500" value="100"></label>
+    <label>Radius: <input type="range" id="radiusSlider" min="10" max="1000" value="500"></label>
     <label>Reflections: <input type="range" id="reflectionsSlider" min="1" max="3" value="1"></label>
   </div>
   <canvas id="canvas"></canvas>
@@ -37,9 +37,10 @@
       soundSource: { x: canvas.width / 2, y: canvas.height / 2 },
       walls: [],
       pulseRadius: 0,
-      maxRadius: 100,
+      maxRadius: 500,
       maxReflections: 1,
       arcs: [], // array of { center, radius, startAngle, endAngle, reflectionLevel, color }
+      sources: [], // array of { center, radius, startAngle, endAngle, reflectionLevel }
       selectedWall: null,
       selectedEndpoint: null,
       dragOffset: null,
@@ -111,6 +112,21 @@
       return t !== null ? add(rayOrigin, mul(d, t)) : null;
     }
 
+    function lineRayIntersection(A, B, rayOrigin, rayDir) {
+      const AB = sub(B, A);
+      const AC = sub(rayOrigin, A);
+      const det = AB.x * (-rayDir.y) - AB.y * (-rayDir.x);
+      
+      if (Math.abs(det) < 1e-6) return undefined; // Parallel
+      
+      const t = (AC.x * (-rayDir.y) - AC.y * (-rayDir.x)) / det;
+      const u = (AB.x * AC.y - AB.y * AC.x) / det;
+      
+      if (u >= 0) {
+        return t;
+      }
+      return undefined;
+    }
     // === REFLECTION ALGORITHM ===
     /*
     function computeReflections(source, maxRadius, wall, reflectionLevel = 0) {
@@ -246,39 +262,79 @@
       return arcs;
     }
     */
-     function computeReflections(source, maxRadius, wall, reflectionLevel = 0) {
+     function computeReflections(source, maxRadius, wall, reflectionLevel = 0, cone = undefined) {
       if (reflectionLevel >= state.maxReflections) return [];
       
-      const A = wall.a;
-      const B = wall.b;
-      const AB = sub(B, A);
-      const normal = norm(vec2(-AB.y, AB.x));
-      
-      // Check if wall faces source
-      const toSource = norm(sub(source, A));
-      if (dot(normal, toSource) < 0) return []; // Wall faces away
-      
+      let A = wall.a;
+      let B = wall.b;
+      let AB = sub(B, A);
+       
       // Check colinearity
       const cross = cross2d(sub(A, source), sub(B, source));
       if (Math.abs(cross) < 1) return []; // Nearly colinear
       
       const C = source;
       const Cp = mirrorPoint(C, A, B);
-      const distCpToLine = Math.abs(dot(sub(A, Cp), normal));
+
+      const debugInfo = [];
+      
+      let t = [0,1]
+      
+      if (cone) {
+        const coneStartDir = vec2(Math.cos(cone.startAngle), Math.sin(cone.startAngle));
+        const coneEndDir = vec2(Math.cos(cone.endAngle), Math.sin(cone.endAngle));
+        let u = [
+          lineRayIntersection(A, B, C, coneStartDir), 
+          lineRayIntersection(A, B, C, coneEndDir)
+        ];
+        u.sort((a, b) => a - b);
+        if (u[1] < 0 || u[0] > 1 || 
+            u[0] === undefined || u[1] === undefined ) return { arcs: [], sources: []}; // Cone does not intersect wall
+        t = [Math.max(0, u[0]), Math.min(1, u[1])];
+        A = add(A, mul(AB, t[0]));
+        B = add(A, mul(AB, t[1] - t[0]));
+        debugInfo.push({type: "point", position: A, color: 'rgba(0,255,0,0.8)'});
+        debugInfo.push({type: "point", position: B, color: 'rgba(0,255,0,0.8)'});
+      }
+
+      let normal = norm(vec2(-AB.y, AB.x));
+      
+      // Check if wall faces source
+      const toSource = norm(sub(source, A));
+      if (dot(normal, toSource) < 0) {
+        const temp = A;
+        A = B;
+        B = temp;
+        AB = sub(B, A);
+        normal = norm(vec2(-AB.y, AB.x));
+      } // Wall faces away
+      
+      const normalDistCpToLine = Math.abs(dot(sub(A, Cp), normal));
+      const clineRayIntersection = lineRayIntersection(A, B, C, sub(Cp, C));
+      
+      let distCpToLine = normalDistCpToLine;
+
+      if (!(clineRayIntersection !== undefined && clineRayIntersection >= 0 && clineRayIntersection <= 1)) {
+          distCpToLine = Math.min(Math.sqrt(dot(sub(Cp,A), sub(Cp, A))), Math.sqrt(dot(sub(Cp, B), sub(Cp, B))));       
+      }
+
       
       const arcs = [];
       const a = maxRadius > distCpToLine; // radius of c > distance C' to line f
-      
+      const sources = [];
+
       if (a) {
         // === REFLECTED ARC ===
         // Intersections of circle d (center C', radius maxRadius) with line f
+
         const intersectionsD = lineCircleIntersection(A, B, Cp, maxRadius);
         const onWallD = intersectionsD.sort((a, b) => a.t - b.t);
         
         let G, H, E, F;
         
+        
         if (onWallD.length >= 2) {
-          G = (onWallD[0].t >= 0 && onWallD[0].t <= 1) ? onWallD[0].point : undefined;
+          G = (onWallD[0].t >= 0&& onWallD[0].t <= 1) ? onWallD[0].point : undefined;
           H = (onWallD[onWallD.length - 1].t >= 0 && onWallD[onWallD.length - 1].t <= 1) ? onWallD[onWallD.length - 1].point : undefined;
         }
         
@@ -290,7 +346,7 @@
         // Ray from C' through B
         if (!H) {
           F = rayCircleIntersection(Cp, sub(B, Cp), Cp, maxRadius);
-        }
+        }      
         
         const startPoint = G || E;
         const endPoint = H || F;
@@ -307,6 +363,7 @@
             reflectionLevel: reflectionLevel + 1,
             color: 'rgba(100, 200, 255, 0.8)' // Reflected arc
           });
+          sources.push({center: Cp, radius: maxRadius, startAngle, endAngle});
         }
       }
       // Ray from C through A
@@ -314,6 +371,7 @@
         
       // Ray from C through B
       J = rayCircleIntersection(C, sub(B, C), C, maxRadius);
+
 
       // === ORIGINAL SOUND WAVE ARCS ===
       if (a) {
@@ -362,15 +420,17 @@
         }
       } else {
         // Full original arc before hitting wall
-        /*arcs.push({
-          center: C,
-          radius: maxRadius,
-          startAngle: 0,
-          endAngle: Math.PI * 2,
-          reflectionLevel: reflectionLevel,
-          color: 'rgba(255, 100, 100, 0.8)' // Original wave (full)
-        });
-        */
+        if (reflectionLevel === 0) {
+          arcs.push({
+            center: C,
+            radius: maxRadius,
+            startAngle: cone ? cone.startAngle : 0,
+            endAngle: cone ? cone.endAngle : Math.PI * 2,
+            reflectionLevel: reflectionLevel,
+            color: 'rgba(255, 100, 100, 0.8)' // Original wave (full)
+          });
+        }
+        
         const startAngle = Math.atan2(J.y - C.y, J.x - C.x);
         const endAngle = Math.atan2(I.y - C.y, I.x - C.x);
         arcs.push({
@@ -383,7 +443,7 @@
           });
       }
             
-      return arcs;
+      return {arcs: arcs, sources: sources};
     }
 
 
@@ -538,15 +598,26 @@
     });
 
     function animate() {
-      state.pulseRadius = Math.min(state.pulseRadius + 2, state.maxRadius);
+      state.pulseRadius = state.maxRadius; // Math.min(state.pulseRadius + 1, state.maxRadius);
       state.arcs = [];
+      state.sources = [];
+      // First reflection from original source
       state.walls.forEach(wall => {
-        state.arcs.push(...computeReflections(state.soundSource, state.pulseRadius, wall));
+          const result = computeReflections(state.soundSource, state.pulseRadius, wall, 0);
+          state.arcs.push(...result.arcs);
+          state.sources.push(...result.sources);
+      });
+      // Subsequent reflections from reflected sources
+      state.sources.forEach(source => {
+        state.walls.forEach(wall => {
+          const result = computeReflections(source.center, source.radius, wall, source.reflectionLevel, {startAngle: source.startAngle, endAngle: source.endAngle});
+          state.arcs.push(...result.arcs);
+        });
       });
       render();
-      if (state.pulseRadius < state.maxRadius) {
+      // if (state.pulseRadius < state.maxRadius) {
         requestAnimationFrame(animate);
-      }
+      // }
     }
 
     function normalizeAngle(angle) {
