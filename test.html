@@ -23,8 +23,8 @@
     <button id="clearWalls">Clear Walls</button>
     <button id="pulse">Pulse (Space)</button>
     <button id="toggleVisibility">Show Visibility</button>
-    <label>Radius: <input type="range" id="radiusSlider" min="10" max="1000" value="500"></label>
-    <label>Reflections: <input type="range" id="reflectionsSlider" min="1" max="3" value="1"></label>
+    <label>Radius: <input type="range" id="radiusSlider" min="10" max="1000" value="100"></label>
+    <label>Reflections: <input type="range" id="reflectionsSlider" min="1" max="3" value="2"></label>
   </div>
   <canvas id="canvas"></canvas>
   <div class="info" id="info"></div>
@@ -38,9 +38,9 @@
     const state = {
       soundSource: { x: canvas.width / 2, y: canvas.height / 2 },
       walls: [],
-      pulseRadius: 0,
+      pulseRadius: 100,
       maxRadius: 500,
-      maxReflections: 1,
+      maxReflections: 2,
       arcs: [],
       sources: [],
       selectedWall: null,
@@ -151,7 +151,7 @@
     // Compute the shadow interval [t0, t1] (in wall's [0,1] parametric space)
     // that `blocker` casts on `wall` as seen from `source`.
     // Returns null if blocker does not shadow wall.
-    function computeShadowInterval(source, blocker, wall) {
+    function computeShadowInterval(source, blocker, wall, virtualSource = null) {
       const A = wall.a, B = wall.b;
       const AB = sub(B, A);
 
@@ -198,22 +198,65 @@
       return result;
     }
 
+    function distToSegment(P, A, B) {
+      const AB = sub(B, A);
+      const t = Math.max(0, Math.min(1, dot(sub(P, A), AB) / dot(AB, AB)));
+      const closest = add(A, mul(AB, t));
+      return dist(P, closest);
+    }
+
     // Return the visible sub-segments of `wall` from `source`,
     // split at shadow boundaries cast by all other walls.
-    function getVisibleSubSegments(source, wall, allWalls) {
+    function getVisibleSubSegments(source, wall, allWalls, virtualSource = null) {
       const A = wall.a, B = wall.b;
       const AB = sub(B, A);
 
       if (len(AB) < 1e-6) return [];
 
-      // Back-face cull — only reflect from walls facing the source
       const normal = norm(vec2(-AB.y, AB.x));
       if (dot(normal, sub(source, A)) <= 0) return [];
 
       let visible = [[0, 1]];
 
+
+      if (virtualSource) {
+        if (virtualSource.wall === wall) {
+          return []; // Don't self-shadow if this wall is the virtual source's own wall
+        }
+        // if the wall is in front of virtualSource.wall then consider the cone, otherwise ignore it (it should have already been clipped by the previous bounce)
+        if (virtualSource.wall !== wall) {
+          const wallDir = norm(sub(wall.b, wall.a));
+          const toVirtualSource = norm(sub(virtualSource.wall.a, source));
+          if (dot(wallDir, toVirtualSource) < 0) {
+            return []; // Wall faces away from virtual source, ignore cone
+          }
+        }
+        // If the wall faces in the same direction as the wall but the signed distance from the virtualSource.wall is negative, it means the wall is behind the virtual source and should not be clipped by the cone
+        const virtualSourceToWall = sub(source,virtualSource.wall.a);
+        const signedDist = dot(vec2(-AB.y, AB.x), virtualSourceToWall);
+        if (signedDist < 0) {
+          return []; // Wall is behind virtual source, ignore cone
+        }
+        // The signed distance may be positive but the wall A B may be outside the cone defined by the virtual source, so we still need to check the cone angles
+        const coneStartDir = vec2(Math.cos(virtualSource.cone.startAngle), Math.sin(virtualSource.cone.startAngle));
+        const coneEndDir = vec2(Math.cos(virtualSource.cone.endAngle), Math.sin(virtualSource.cone.endAngle));
+        let u = [
+          lineRayIntersection(A, B, source, coneStartDir), 
+          lineRayIntersection(A, B, source, coneEndDir)
+        ];
+        u.sort((a, b) => a - b);
+        if (u[1] < 0 || u[0] > 1 || 
+            u[0] === undefined || u[1] === undefined ) return []; // Cone does not intersect wall
+        visible = [[Math.max(0, u[0]), Math.min(1, u[1])]];
+      }
+
+      // Original shadow-casting logic (always executed)
       for (const blocker of allWalls) {
         if (blocker === wall) continue;
+        // if distance from virtualSource.wall to wall is less than 1E-6 and the endpoints lies on each other segments then continue, this means the wall is effectively part of the same wall as the virtual source and should not shadow itself
+        if (virtualSource && distToSegment(virtualSource.wall.a, blocker.a, blocker.b) < 1e-6 && distToSegment(virtualSource.wall.b, blocker.a, blocker.b) < 1e-6) {
+          continue;
+        }
         const shadow = computeShadowInterval(source, blocker, wall);
         if (shadow) {
           visible = subtractInterval(visible, shadow);
@@ -229,10 +272,13 @@
         }));
     }
 
+
     // === REFLECTION ALGORITHM ===
-    function computeReflections(source, maxRadius, wall, reflectionLevel = 0, cone = undefined) {
-      if (reflectionLevel >= state.maxReflections) return { arcs: [], sources: []};;
-      
+    function computeReflections(source, maxRadius, wall, reflectionLevel = 0, virtualSource = undefined) {
+      if (reflectionLevel >= state.maxReflections) return { arcs: [], sources: []};
+
+      const emitSource = reflectionLevel < state.maxReflections - 1;
+
       let A = wall.a;
       let B = wall.b;
       let AB = sub(B, A);
@@ -256,24 +302,25 @@
       
       let t = [0,1]
       
-      if (cone) {
-        const coneStartDir = vec2(Math.cos(cone.startAngle), Math.sin(cone.startAngle));
-        const coneEndDir = vec2(Math.cos(cone.endAngle), Math.sin(cone.endAngle));
+      if (virtualSource) {
+        const coneStartDir = vec2(Math.cos(virtualSource.cone.startAngle), Math.sin(virtualSource.cone.startAngle));
+        const coneEndDir = vec2(Math.cos(virtualSource.cone.endAngle), Math.sin(virtualSource.cone.endAngle));
+
         let u = [
           lineRayIntersection(A, B, C, coneStartDir), 
           lineRayIntersection(A, B, C, coneEndDir)
         ];
+
         u.sort((a, b) => a - b);
+
         if (u[1] < 0 || u[0] > 1 || 
             u[0] === undefined || u[1] === undefined ) return { arcs: [], sources: []}; // Cone does not intersect wall
+
         t = [Math.max(0, u[0]), Math.min(1, u[1])];
+
         A = add(A, mul(AB, t[0]));
         B = add(A, mul(AB, t[1] - t[0]));
-        debugInfo.push({type: "point", position: A, color: 'rgba(0,255,0,0.8)'});
-        debugInfo.push({type: "point", position: B, color: 'rgba(0,255,0,0.8)'});
       }
-
-      
       
       const normalDistCpToLine = Math.abs(dot(sub(A, Cp), normal));
       const clineRayIntersection = lineRayIntersection(A, B, C, sub(Cp, C));
@@ -286,7 +333,6 @@
 
       
       const arcs = [];
-      const a = maxRadius > distCpToLine;
       const sources = [];
 
       // Ray from C through A
@@ -295,7 +341,7 @@
       // Ray from C through B
       J = rayCircleIntersection(C, sub(B, C), C, maxRadius);
 
-      if (a) {
+      if (maxRadius > distCpToLine) {
         // === REFLECTED ARC ===
         let G, H, E, F;
 
@@ -318,19 +364,19 @@
         const startPoint = G || E;
         const endPoint = H || F;
         
-        if (startPoint && endPoint) {
+        if (startPoint && endPoint && emitSource && I && J) {
           const startAngle = Math.atan2(startPoint.y - Cp.y, startPoint.x - Cp.x);
           const endAngle = Math.atan2(endPoint.y - Cp.y, endPoint.x - Cp.x);
           
-          arcs.push({
-            center: Cp,
-            radius: maxRadius,
-            startAngle: startAngle,
-            endAngle: endAngle,
-            reflectionLevel: reflectionLevel + 1,
-            color: 'rgba(100, 200, 255, 0.8)'
-          });
-          sources.push({center: Cp, radius: maxRadius, startAngle, endAngle});
+          // arcs.push({
+          //   center: Cp,
+          //   radius: maxRadius,
+          //   startAngle: startAngle,
+          //   endAngle: endAngle,
+          //   reflectionLevel: reflectionLevel + 1,
+          //   color: 'rgba(100, 200, 255, 0.8)'
+          // });
+          sources.push({center: Cp, radius: maxRadius, startAngle, endAngle, wall: {a: A, b: B}, reflectionLevel: reflectionLevel + 1, cone: {startAngle, endAngle}});
         }
 
         const startPointGI = G || I;
@@ -373,7 +419,7 @@
             color: 'rgba(255, 100, 100, 0.8)'
           });
         }
-        
+        if (I && J) {
         const startAngle = Math.atan2(J.y - C.y, J.x - C.x);
         const endAngle = Math.atan2(I.y - C.y, I.x - C.x);
         arcs.push({
@@ -384,6 +430,7 @@
             reflectionLevel: reflectionLevel,
             color: 'rgba(255, 255, 100, 0.8)'
           });
+        }
       }
             
       return {arcs: arcs, sources: sources};
@@ -544,17 +591,54 @@
       state.sources = [];
       state.visibleSegments = [];
 
-      state.walls.forEach(wall => {
-        // Split wall into visible sub-segments, occluded parts are skipped
-        const subSegs = getVisibleSubSegments(state.soundSource, wall, state.walls);
+      const queue = [];
 
+      // Enqueue primary source reflections on all walls
+      state.walls.forEach(wall => {
+        const subSegs = getVisibleSubSegments(state.soundSource, wall, state.walls);
         subSegs.forEach(seg => {
           state.visibleSegments.push(seg);
-          const result = computeReflections(state.soundSource, state.pulseRadius, seg, 0);
-          state.arcs.push(...result.arcs);
-          state.sources.push(...result.sources);
+          queue.push({
+            source: state.soundSource,
+            wall: seg,
+            reflectionLevel: 0,
+            virtualSource: null
+          });
         });
       });
+
+      // Process queue level-by-level
+      while (queue.length > 0) {
+        const { source, wall, reflectionLevel, virtualSource } = queue.shift();
+
+        // Compute reflections for this source on this wall
+        const result = computeReflections(source, state.pulseRadius, wall, reflectionLevel, virtualSource);
+        
+        // Only emit arcs if not at final bounce level
+        if (reflectionLevel < state.maxReflections) {
+          state.arcs.push(...result.arcs);
+        }
+        state.sources.push(...result.sources);
+        // Enqueue new virtual sources for next bounce level
+        result.sources.forEach(newSource => {
+          // Get visible segments of all walls from this fictive source
+          state.walls.forEach(nextWall => {
+            const subSegs = getVisibleSubSegments(newSource.center, nextWall, state.walls, newSource);
+
+            subSegs.forEach(seg => {
+              queue.push({
+                source: newSource.center,
+                wall: seg,
+                reflectionLevel: reflectionLevel + 1,
+                virtualSource: {
+                  wall: newSource.wall,
+                  cone: newSource.cone
+                }
+              });
+            });
+          });
+        });
+      }
 
       render();
       requestAnimationFrame(animate);
@@ -581,7 +665,7 @@
       ctx.stroke();
     }
 
-    function drawFictiveSource(source) {
+    function drawVirtualSource(source) {
       ctx.strokeStyle = 'rgba(255, 100, 255, 0.8)';
       ctx.lineWidth = 2;
       const radius = 6;
@@ -611,7 +695,7 @@
       ctx.fill();
 
       state.sources.forEach(source => {
-        drawFictiveSource(source);
+        drawVirtualSource(source);
       });
 
       // Draw reflection arcs
@@ -624,7 +708,9 @@
         Walls: ${state.walls.length} | 
         Visible segments: ${state.visibleSegments.length} |
         Pulse Radius: ${state.pulseRadius.toFixed(0)} |
-        Arcs: ${state.arcs.length}
+        Arcs: ${state.arcs.length} |
+        Bounces: ${state.maxReflections} |
+        Virtual Sources: ${state.sources.length}
       `;
     }
 
