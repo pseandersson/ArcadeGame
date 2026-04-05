@@ -128,142 +128,8 @@
       return undefined;
     }
     // === REFLECTION ALGORITHM ===
-    /*
-    function computeReflections(source, maxRadius, wall, reflectionLevel = 0) {
-      if (reflectionLevel >= state.maxReflections) return [];
-      
-      const A = wall.a;
-      const B = wall.b;
-      const AB = sub(B, A);
-      const normal = norm(vec2(-AB.y, AB.x));
-      
-      // Check if wall faces source
-      const toSource = norm(sub(source, A));
-      if (dot(normal, toSource) < 0) return []; // Wall faces away
-      
-      // Check colinearity
-      const cross = cross2d(sub(A, source), sub(B, source));
-      if (Math.abs(cross) < 1) return []; // Nearly colinear
-      
-      const C = source;
-      const Cp = mirrorPoint(C, A, B);
-      const distCpToLine = Math.abs(dot(sub(A, Cp), normal));
-      
-      const arcs = [];
-      const a = distCpToLine < maxRadius; // radius of c > distance C' to line f
-      
-      if (a) {
-        // === REFLECTED ARC ===
-        // Intersections of circle d (center C', radius maxRadius) with line f
-        const intersectionsD = lineCircleIntersection(A, B, Cp, maxRadius);
-        const onWallD = intersectionsD.filter(i => i.t >= 0 && i.t <= 1).sort((a, b) => a.t - b.t);
-        
-        let G, H, E, F;
-        
-        if (onWallD.length >= 2) {
-          G = onWallD[0].point;
-          H = onWallD[onWallD.length - 1].point;
-        }
-        
-        // Ray from C' through A
-        if (!G) {
-          E = rayCircleIntersection(Cp, sub(A, Cp), Cp, maxRadius);
-        }
-        
-        // Ray from C' through B
-        if (!H) {
-          F = rayCircleIntersection(Cp, sub(B, Cp), Cp, maxRadius);
-        }
-        
-        const startPoint = G || E;
-        const endPoint = H || F;
-        
-        if (startPoint && endPoint) {
-          const startAngle = Math.atan2(startPoint.y - Cp.y, startPoint.x - Cp.x);
-          const endAngle = Math.atan2(endPoint.y - Cp.y, endPoint.x - Cp.x);
-          
-          arcs.push({
-            center: Cp,
-            radius: maxRadius,
-            startAngle: startAngle,
-            endAngle: endAngle,
-            reflectionLevel: reflectionLevel + 1,
-            color: 'rgba(100, 200, 255, 0.8)' // Reflected arc
-          });
-        }
-      }
-      
-      // === ORIGINAL SOUND WAVE ARCS ===
-      const b = maxRadius <= dist(C, add(A, mul(AB, 0.5))); // radius of c <= distance C to line f (approx)
-      
-      if (a) {
-        // Intersections of circle c (center C, radius maxRadius) with line f
-        const intersectionsC = lineCircleIntersection(A, B, C, maxRadius);
-        const onWallC = intersectionsC.filter(i => i.t >= 0 && i.t <= 1).sort((a, b) => a.t - b.t);
-        
-        let K, L, I, J;
-        
-        if (onWallC.length >= 2) {
-          K = onWallC[0].point;
-          L = onWallC[onWallC.length - 1].point;
-        }
-        
-        // Ray from C through A
-        if (!I) {
-          I = rayCircleIntersection(C, sub(A, C), C, maxRadius);
-        }
-        
-        // Ray from C through B
-        if (!J) {
-          J = rayCircleIntersection(C, sub(B, C), C, maxRadius);
-        }
-        
-        // Arc through K and I
-        if (K && I) {
-          const startAngle = Math.atan2(K.y - C.y, K.x - C.x);
-          const endAngle = Math.atan2(I.y - C.y, I.x - C.x);
-          
-          arcs.push({
-            center: C,
-            radius: maxRadius,
-            startAngle: startAngle,
-            endAngle: endAngle,
-            reflectionLevel: reflectionLevel,
-            color: 'rgba(255, 150, 100, 0.8)' // Original wave (partial)
-          });
-        }
-        
-        // Arc through J and L
-        if (J && L) {
-          const startAngle = Math.atan2(J.y - C.y, J.x - C.x);
-          const endAngle = Math.atan2(L.y - C.y, L.x - C.x);
-          
-          arcs.push({
-            center: C,
-            radius: maxRadius,
-            startAngle: startAngle,
-            endAngle: endAngle,
-            reflectionLevel: reflectionLevel,
-            color: 'rgba(255, 150, 100, 0.8)' // Original wave (partial)
-          });
-        }
-      } else if (b) {
-        // Full original arc before hitting wall
-        arcs.push({
-          center: C,
-          radius: maxRadius,
-          startAngle: 0,
-          endAngle: Math.PI * 2,
-          reflectionLevel: reflectionLevel,
-          color: 'rgba(255, 100, 100, 0.8)' // Original wave (full)
-        });
-      }
-      
-      return arcs;
-    }
-    */
-     function computeReflections(source, maxRadius, wall, reflectionLevel = 0, cone = undefined) {
-      if (reflectionLevel >= state.maxReflections) return [];
+    function computeReflections(source, maxRadius, wall, reflectionLevel = 0, cone = undefined) {
+      if (reflectionLevel >= state.maxReflections) return { arcs: [], sources: []};;
       
       let A = wall.a;
       let B = wall.b;
@@ -271,7 +137,15 @@
        
       // Check colinearity
       const cross = cross2d(sub(A, source), sub(B, source));
-      if (Math.abs(cross) < 1) return []; // Nearly colinear
+      if (Math.abs(cross) < 1) return { arcs: [], sources: []}; // Nearly colinear
+
+      let normal = norm(vec2(-AB.y, AB.x));
+      
+      // Check if wall faces source
+      const toSource = norm(sub(source, A));
+      if (dot(normal, toSource) < 0) {
+        return { arcs: [], sources: []}; // Wall faces away, no reflection
+      } // Wall faces away
       
       const C = source;
       const Cp = mirrorPoint(C, A, B);
@@ -297,17 +171,7 @@
         debugInfo.push({type: "point", position: B, color: 'rgba(0,255,0,0.8)'});
       }
 
-      let normal = norm(vec2(-AB.y, AB.x));
       
-      // Check if wall faces source
-      const toSource = norm(sub(source, A));
-      if (dot(normal, toSource) < 0) {
-        const temp = A;
-        A = B;
-        B = temp;
-        AB = sub(B, A);
-        normal = norm(vec2(-AB.y, AB.x));
-      } // Wall faces away
       
       const normalDistCpToLine = Math.abs(dot(sub(A, Cp), normal));
       const clineRayIntersection = lineRayIntersection(A, B, C, sub(Cp, C));
@@ -323,15 +187,19 @@
       const a = maxRadius > distCpToLine; // radius of c > distance C' to line f
       const sources = [];
 
+      // Ray from C through A
+      I = rayCircleIntersection(C, sub(A, C), C, maxRadius);
+        
+      // Ray from C through B
+      J = rayCircleIntersection(C, sub(B, C), C, maxRadius);
+
       if (a) {
         // === REFLECTED ARC ===
         // Intersections of circle d (center C', radius maxRadius) with line f
+        let G, H, E, F;
 
         const intersectionsD = lineCircleIntersection(A, B, Cp, maxRadius);
-        const onWallD = intersectionsD.sort((a, b) => a.t - b.t);
-        
-        let G, H, E, F;
-        
+        const onWallD = intersectionsD.sort((a, b) => a.t - b.t);     
         
         if (onWallD.length >= 2) {
           G = (onWallD[0].t >= 0&& onWallD[0].t <= 1) ? onWallD[0].point : undefined;
@@ -365,32 +233,11 @@
           });
           sources.push({center: Cp, radius: maxRadius, startAngle, endAngle});
         }
-      }
-      // Ray from C through A
-      I = rayCircleIntersection(C, sub(A, C), C, maxRadius);
-        
-      // Ray from C through B
-      J = rayCircleIntersection(C, sub(B, C), C, maxRadius);
 
-
-      // === ORIGINAL SOUND WAVE ARCS ===
-      if (a) {
-        // Intersections of circle c (center C, radius maxRadius) with line f
-        const intersectionsC = lineCircleIntersection(A, B, C, maxRadius);
-        const onWallC = intersectionsC.sort((a, b) => a.t - b.t);
-        
-        let K, L;
-        
-        if (onWallC.length >= 2) {
-          K = (onWallC[0].t >= 0 && onWallC[0].t <= 1) ? onWallC[0].point : undefined;
-          L = (onWallC[onWallC.length - 1].t >= 0 && onWallC[onWallC.length - 1].t <= 1) ? onWallC[onWallC.length - 1].point : undefined;
-        }
-        
-        
         // Arc through K (or I if K undefined) and I
-        const startPointKI = K || I;
-        if (startPointKI && I) {
-          const startAngle = Math.atan2(startPointKI.y - C.y, startPointKI.x - C.x);
+        const startPointGI = G || I;
+        if (startPointGI && I) {
+          const startAngle = Math.atan2(startPointGI.y - C.y, startPointGI.x - C.x);
           const endAngle = Math.atan2(I.y - C.y, I.x - C.x);
           
           arcs.push({
@@ -404,10 +251,10 @@
         }
         
         // Arc through J and L (or J if L undefined)
-        const endPointJL = L || J;
-        if (J && endPointJL) {
+        const endPointHJ = H || J;
+        if (J && endPointHJ) {
           const startAngle = Math.atan2(J.y - C.y, J.x - C.x);
-          const endAngle = Math.atan2(endPointJL.y - C.y, endPointJL.x - C.x);
+          const endAngle = Math.atan2(endPointHJ.y - C.y, endPointHJ.x - C.x);
           
           arcs.push({
             center: C,
@@ -420,7 +267,7 @@
         }
       } else {
         // Full original arc before hitting wall
-        if (reflectionLevel === 0) {
+        if (reflectionLevel === 0 && false) {
           arcs.push({
             center: C,
             radius: maxRadius,
@@ -456,42 +303,21 @@
       ctx.lineTo(wall.b.x, wall.b.y);
       ctx.stroke();
 
+      // Normal indicator (short tick)
+      const mid  = mul(add(wall.a, wall.b), 0.5);
+      const AB   = sub(wall.b, wall.a);
+      const n    = norm(vec2(-AB.y, AB.x));
+      ctx.strokeStyle = '#445566';
+      ctx.lineWidth   = 1;
+      ctx.beginPath();
+      ctx.moveTo(mid.x, mid.y);
+      ctx.lineTo(mid.x + n.x * 12, mid.y + n.y * 12);
+      ctx.stroke();
+
       // Draw handles
       ctx.fillStyle = isSelected ? '#ff6600' : '#999';
       ctx.fillRect(wall.a.x - 4, wall.a.y - 4, 8, 8);
       ctx.fillRect(wall.b.x - 4, wall.b.y - 4, 8, 8);
-    }
-
-    function render() {
-      ctx.fillStyle = '#0a0a0a';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-      // Draw walls
-      state.walls.forEach((wall, i) => {
-        drawWall(wall, i === state.selectedWall);
-      });
-
-      // Draw source
-      ctx.fillStyle = '#ff3333';
-      ctx.beginPath();
-      ctx.arc(state.soundSource.x, state.soundSource.y, 6, 0, Math.PI * 2);
-      ctx.fill();
-
-      // Draw arcs
-      state.arcs.forEach(arc => {
-        ctx.strokeStyle = arc.color;
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.arc(arc.center.x, arc.center.y, arc.radius, arc.startAngle, arc.endAngle);
-        ctx.stroke();
-      });
-
-      // Info
-      document.getElementById('info').innerHTML = `
-        Source: (${state.soundSource.x.toFixed(0)}, ${state.soundSource.y.toFixed(0)}) | 
-        Walls: ${state.walls.length} | 
-        Arcs: ${state.arcs.length}
-      `;
     }
 
     // === EVENTS ===
@@ -608,12 +434,12 @@
           state.sources.push(...result.sources);
       });
       // Subsequent reflections from reflected sources
-      state.sources.forEach(source => {
-        state.walls.forEach(wall => {
-          const result = computeReflections(source.center, source.radius, wall, source.reflectionLevel, {startAngle: source.startAngle, endAngle: source.endAngle});
-          state.arcs.push(...result.arcs);
-        });
-      });
+      // state.sources.forEach(source => {
+      //   state.walls.forEach(wall => {
+      //     const result = computeReflections(source.center, source.radius, wall, source.reflectionLevel, {startAngle: source.startAngle, endAngle: source.endAngle});
+      //     state.arcs.push(...result.arcs);
+      //   });
+      // });
       render();
       // if (state.pulseRadius < state.maxRadius) {
         requestAnimationFrame(animate);
@@ -641,6 +467,15 @@
       ctx.stroke();
     }
 
+    function drawFictiveSource(source) {
+      ctx.strokeStyle = 'rgba(255, 100, 255, 0.8)';
+      ctx.lineWidth = 2;
+      const radius = 6;
+      ctx.beginPath();
+      ctx.arc(source.center.x, source.center.y, radius, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
     // Update render function to use drawArc
     function render() {
       ctx.fillStyle = '#0a0a0a';
@@ -657,6 +492,10 @@
       ctx.arc(state.soundSource.x, state.soundSource.y, 6, 0, Math.PI * 2);
       ctx.fill();
 
+      state.sources.forEach(source => {
+        drawFictiveSource(source);
+      });
+
       // Draw arcs
       state.arcs.forEach(arc => {
         drawArc(arc.center, arc.radius, arc.startAngle, arc.endAngle, arc.color);
@@ -670,6 +509,39 @@
         Arcs: ${state.arcs.length}
       `;
     }
+
+    const roomW = 42, roomH = 40;
+    const roomScale = Math.min(canvas.width * 0.90 / roomW, canvas.height * 0.90 / roomH);
+    const roomCx = canvas.width  / 2;
+    const roomCy = canvas.height / 2;
+ 
+    function w(x, z) { return vec2(roomCx + x * roomScale, roomCy - z * roomScale); }
+ 
+    const testRoomWalls = [
+      // Outer boundary
+      { a: w(-21, 20),  b: w( 21, 20)  },   // North
+      { a: w( 21,-20),  b: w(-21,-20)  },   // South
+      { a:  w( 20, 20),  b: w( 20,-20)  },   // East
+      { a: w(-20,-20),  b: w(-20, 20)  },   // West
+      // Interior walls
+      { a: w(  8, 12),  b: w(  8,  4)  },   // Interior A (vertical)
+      { a:  w(9, 12), b: w( 8, 12) },   // Interior A extension (vertical)
+      { a: w( 9,  4), b: w( 9, 12) },
+      { a: w( 8, 4), b: w(9, 4) },
+      { a: w( -5, -5),  b: w(-15, -5) },   // Interior B (horizontal)
+      { a: w(-15, -5), b: w(-15, -6) },   // Interior B extension (horizontal)
+      { a: w(-15, -6), b: w(-5, -6) },
+      { a: w(-5, -6), b: w(-5, -5) },
+      { a: w( 12, -7),  b: w( 12,-13)  },   // Interior C (vertical)
+      { a: w(13, -7), b: w( 12, -7) },   // Interior C extension (vertical)
+      { a: w(13, -13), b: w( 13, -7) },
+      { a: w( 12, -13), b: w(13, -13) }
+    ];
+ 
+    state.walls.push(...testRoomWalls);
+ 
+    // Place source in the middle of the room
+    state.soundSource = w(0, 0);
 
     render();
   </script>
