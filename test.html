@@ -10,6 +10,7 @@
     .controls { margin: 20px 0; display: flex; gap: 10px; flex-wrap: wrap; }
     button { padding: 8px 16px; background: #333; color: #eee; border: 1px solid #666; cursor: pointer; }
     button:hover { background: #444; }
+    button.active { background: #226; border-color: #66f; }
     .info { margin-top: 20px; font-size: 12px; }
     input[type="range"] { width: 200px; }
     label { display: inline-block; margin-right: 15px; }
@@ -21,6 +22,7 @@
     <button id="addWall">Add Wall</button>
     <button id="clearWalls">Clear Walls</button>
     <button id="pulse">Pulse (Space)</button>
+    <button id="toggleVisibility">Show Visibility</button>
     <label>Radius: <input type="range" id="radiusSlider" min="10" max="1000" value="500"></label>
     <label>Reflections: <input type="range" id="reflectionsSlider" min="1" max="3" value="1"></label>
   </div>
@@ -39,13 +41,15 @@
       pulseRadius: 0,
       maxRadius: 500,
       maxReflections: 1,
-      arcs: [], // array of { center, radius, startAngle, endAngle, reflectionLevel, color }
-      sources: [], // array of { center, radius, startAngle, endAngle, reflectionLevel }
+      arcs: [],
+      sources: [],
       selectedWall: null,
       selectedEndpoint: null,
       dragOffset: null,
       creatingWall: false,
-      wallStart: null
+      wallStart: null,
+      showVisibility: false,
+      visibleSegments: []   // [{a, b}] — clipped visible sub-segments per frame
     };
 
     // === GEOMETRY UTILITIES ===
@@ -112,12 +116,14 @@
       return t !== null ? add(rayOrigin, mul(d, t)) : null;
     }
 
+    // Returns parametric t on line AB where ray from rayOrigin in rayDir hits it.
+    // u is the ray parameter (u >= 0 means forward).
     function lineRayIntersection(A, B, rayOrigin, rayDir) {
       const AB = sub(B, A);
       const AC = sub(rayOrigin, A);
       const det = AB.x * (-rayDir.y) - AB.y * (-rayDir.x);
       
-      if (Math.abs(det) < 1e-6) return undefined; // Parallel
+      if (Math.abs(det) < 1e-6) return undefined;
       
       const t = (AC.x * (-rayDir.y) - AC.y * (-rayDir.x)) / det;
       const u = (AB.x * AC.y - AB.y * AC.x) / det;
@@ -127,6 +133,102 @@
       }
       return undefined;
     }
+
+    // === VISIBILITY UTILITIES ===
+
+    // True if segments (A→B) and (C→D) properly cross (not at endpoints).
+    function segmentsProperlyIntersect(A, B, C, D) {
+      const d1 = cross2d(sub(D, C), sub(A, C));
+      const d2 = cross2d(sub(D, C), sub(B, C));
+      const d3 = cross2d(sub(B, A), sub(C, A));
+      const d4 = cross2d(sub(B, A), sub(D, A));
+      return (
+        ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) &&
+        ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))
+      );
+    }
+
+    // Compute the shadow interval [t0, t1] (in wall's [0,1] parametric space)
+    // that `blocker` casts on `wall` as seen from `source`.
+    // Returns null if blocker does not shadow wall.
+    function computeShadowInterval(source, blocker, wall) {
+      const A = wall.a, B = wall.b;
+      const AB = sub(B, A);
+
+      // t on wall line where rays through each blocker endpoint land
+      let tA = lineRayIntersection(A, B, source, sub(blocker.a, source));
+      let tB = lineRayIntersection(A, B, source, sub(blocker.b, source));
+
+      // Both rays miss wall line entirely — no shadow
+      if (tA === undefined && tB === undefined) return null;
+
+      // If one ray is parallel/behind, project that endpoint onto the wall axis
+      // to decide which wall boundary the shadow reaches
+      if (tA === undefined) {
+        tA = dot(sub(blocker.a, A), AB) / dot(AB, AB) > 0.5 ? 1 : 0;
+      }
+      if (tB === undefined) {
+        tB = dot(sub(blocker.b, A), AB) / dot(AB, AB) > 0.5 ? 1 : 0;
+      }
+
+      let t0 = Math.max(0, Math.min(tA, tB));
+      let t1 = Math.min(1, Math.max(tA, tB));
+
+      if (t1 - t0 < 1e-6) return null;
+
+      // Confirm blocker actually lies between source and the wall midpoint
+      const mid = add(A, mul(AB, (t0 + t1) * 0.5));
+      if (!segmentsProperlyIntersect(source, mid, blocker.a, blocker.b)) return null;
+
+      return [t0, t1];
+    }
+
+    // Subtract interval [s0, s1] from a list of visible intervals.
+    function subtractInterval(visible, shadow) {
+      const [s0, s1] = shadow;
+      const result = [];
+      for (const [v0, v1] of visible) {
+        if (s1 <= v0 || s0 >= v1) {
+          result.push([v0, v1]);
+        } else {
+          if (v0 < s0 - 1e-6) result.push([v0, s0]);
+          if (v1 > s1 + 1e-6) result.push([s1, v1]);
+        }
+      }
+      return result;
+    }
+
+    // Return the visible sub-segments of `wall` from `source`,
+    // split at shadow boundaries cast by all other walls.
+    function getVisibleSubSegments(source, wall, allWalls) {
+      const A = wall.a, B = wall.b;
+      const AB = sub(B, A);
+
+      if (len(AB) < 1e-6) return [];
+
+      // Back-face cull — only reflect from walls facing the source
+      const normal = norm(vec2(-AB.y, AB.x));
+      if (dot(normal, sub(source, A)) <= 0) return [];
+
+      let visible = [[0, 1]];
+
+      for (const blocker of allWalls) {
+        if (blocker === wall) continue;
+        const shadow = computeShadowInterval(source, blocker, wall);
+        if (shadow) {
+          visible = subtractInterval(visible, shadow);
+        }
+        if (visible.length === 0) break;
+      }
+
+      return visible
+        .filter(([t0, t1]) => t1 - t0 > 1e-4)
+        .map(([t0, t1]) => ({
+          a: add(A, mul(AB, t0)),
+          b: add(A, mul(AB, t1))
+        }));
+    }
+
     // === REFLECTION ALGORITHM ===
     function computeReflections(source, maxRadius, wall, reflectionLevel = 0, cone = undefined) {
       if (reflectionLevel >= state.maxReflections) return { arcs: [], sources: []};;
@@ -145,7 +247,7 @@
       const toSource = norm(sub(source, A));
       if (dot(normal, toSource) < 0) {
         return { arcs: [], sources: []}; // Wall faces away, no reflection
-      } // Wall faces away
+      }
       
       const C = source;
       const Cp = mirrorPoint(C, A, B);
@@ -184,7 +286,7 @@
 
       
       const arcs = [];
-      const a = maxRadius > distCpToLine; // radius of c > distance C' to line f
+      const a = maxRadius > distCpToLine;
       const sources = [];
 
       // Ray from C through A
@@ -195,7 +297,6 @@
 
       if (a) {
         // === REFLECTED ARC ===
-        // Intersections of circle d (center C', radius maxRadius) with line f
         let G, H, E, F;
 
         const intersectionsD = lineCircleIntersection(A, B, Cp, maxRadius);
@@ -206,12 +307,10 @@
           H = (onWallD[onWallD.length - 1].t >= 0 && onWallD[onWallD.length - 1].t <= 1) ? onWallD[onWallD.length - 1].point : undefined;
         }
         
-        // Ray from C' through A
         if (!G) {
           E = rayCircleIntersection(Cp, sub(A, Cp), Cp, maxRadius);
         }
         
-        // Ray from C' through B
         if (!H) {
           F = rayCircleIntersection(Cp, sub(B, Cp), Cp, maxRadius);
         }      
@@ -229,12 +328,11 @@
             startAngle: startAngle,
             endAngle: endAngle,
             reflectionLevel: reflectionLevel + 1,
-            color: 'rgba(100, 200, 255, 0.8)' // Reflected arc
+            color: 'rgba(100, 200, 255, 0.8)'
           });
           sources.push({center: Cp, radius: maxRadius, startAngle, endAngle});
         }
 
-        // Arc through K (or I if K undefined) and I
         const startPointGI = G || I;
         if (startPointGI && I) {
           const startAngle = Math.atan2(startPointGI.y - C.y, startPointGI.x - C.x);
@@ -246,11 +344,10 @@
             startAngle: startAngle,
             endAngle: endAngle,
             reflectionLevel: reflectionLevel,
-            color: 'rgba(255, 150, 100, 0.8)' // Original wave (partial)
+            color: 'rgba(255, 150, 100, 0.8)'
           });
         }
         
-        // Arc through J and L (or J if L undefined)
         const endPointHJ = H || J;
         if (J && endPointHJ) {
           const startAngle = Math.atan2(J.y - C.y, J.x - C.x);
@@ -262,11 +359,10 @@
             startAngle: startAngle,
             endAngle: endAngle,
             reflectionLevel: reflectionLevel,
-            color: 'rgba(255, 150, 100, 0.8)' // Original wave (partial)
+            color: 'rgba(255, 150, 100, 0.8)'
           });
         }
       } else {
-        // Full original arc before hitting wall
         if (reflectionLevel === 0 && false) {
           arcs.push({
             center: C,
@@ -274,7 +370,7 @@
             startAngle: cone ? cone.startAngle : 0,
             endAngle: cone ? cone.endAngle : Math.PI * 2,
             reflectionLevel: reflectionLevel,
-            color: 'rgba(255, 100, 100, 0.8)' // Original wave (full)
+            color: 'rgba(255, 100, 100, 0.8)'
           });
         }
         
@@ -286,7 +382,7 @@
             startAngle: startAngle,
             endAngle: endAngle,
             reflectionLevel: reflectionLevel,
-            color: 'rgba(255, 255, 100, 0.8)' // Original wave (partial)
+            color: 'rgba(255, 255, 100, 0.8)'
           });
       }
             
@@ -303,7 +399,6 @@
       ctx.lineTo(wall.b.x, wall.b.y);
       ctx.stroke();
 
-      // Normal indicator (short tick)
       const mid  = mul(add(wall.a, wall.b), 0.5);
       const AB   = sub(wall.b, wall.a);
       const n    = norm(vec2(-AB.y, AB.x));
@@ -314,10 +409,28 @@
       ctx.lineTo(mid.x + n.x * 12, mid.y + n.y * 12);
       ctx.stroke();
 
-      // Draw handles
       ctx.fillStyle = isSelected ? '#ff6600' : '#999';
       ctx.fillRect(wall.a.x - 4, wall.a.y - 4, 8, 8);
       ctx.fillRect(wall.b.x - 4, wall.b.y - 4, 8, 8);
+    }
+
+    // Draw a visible sub-segment overlay
+    function drawVisibleSegment(seg) {
+      ctx.strokeStyle = 'rgba(80, 255, 120, 0.85)';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(seg.a.x, seg.a.y);
+      ctx.lineTo(seg.b.x, seg.b.y);
+      ctx.stroke();
+
+      // Small dot at each split point
+      ctx.fillStyle = 'rgba(80, 255, 120, 0.9)';
+      ctx.beginPath();
+      ctx.arc(seg.a.x, seg.a.y, 3, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(seg.b.x, seg.b.y, 3, 0, Math.PI * 2);
+      ctx.fill();
     }
 
     // === EVENTS ===
@@ -325,13 +438,11 @@
       const rect = canvas.getBoundingClientRect();
       const pos = vec2(e.clientX - rect.left, e.clientY - rect.top);
 
-      // Check if near source
       if (dist(pos, state.soundSource) < 10) {
         state.dragOffset = sub(state.soundSource, pos);
         return;
       }
 
-      // Check if near wall endpoint
       for (let i = 0; i < state.walls.length; i++) {
         const wall = state.walls[i];
         if (dist(pos, wall.a) < 8) {
@@ -348,7 +459,6 @@
         }
       }
 
-      // Start new wall
       state.creatingWall = true;
       state.wallStart = pos;
     });
@@ -359,10 +469,8 @@
 
       if (state.dragOffset) {
         if (state.selectedWall === null) {
-          // Moving source
           state.soundSource = add(pos, state.dragOffset);
         } else {
-          // Moving wall endpoint
           const wall = state.walls[state.selectedWall];
           if (state.selectedEndpoint === 'a') {
             wall.a = add(pos, state.dragOffset);
@@ -400,12 +508,19 @@
     document.getElementById('clearWalls').addEventListener('click', () => {
       state.walls = [];
       state.arcs = [];
+      state.visibleSegments = [];
       render();
     });
 
     document.getElementById('pulse').addEventListener('click', () => {
       state.pulseRadius = 0;
       animate();
+    });
+
+    document.getElementById('toggleVisibility').addEventListener('click', (e) => {
+      state.showVisibility = !state.showVisibility;
+      e.target.classList.toggle('active', state.showVisibility);
+      render();
     });
 
     document.getElementById('radiusSlider').addEventListener('input', (e) => {
@@ -424,26 +539,25 @@
     });
 
     function animate() {
-      state.pulseRadius = state.maxRadius; // Math.min(state.pulseRadius + 1, state.maxRadius);
+      state.pulseRadius = state.maxRadius;
       state.arcs = [];
       state.sources = [];
-      // First reflection from original source
+      state.visibleSegments = [];
+
       state.walls.forEach(wall => {
-          const result = computeReflections(state.soundSource, state.pulseRadius, wall, 0);
+        // Split wall into visible sub-segments, occluded parts are skipped
+        const subSegs = getVisibleSubSegments(state.soundSource, wall, state.walls);
+
+        subSegs.forEach(seg => {
+          state.visibleSegments.push(seg);
+          const result = computeReflections(state.soundSource, state.pulseRadius, seg, 0);
           state.arcs.push(...result.arcs);
           state.sources.push(...result.sources);
+        });
       });
-      // Subsequent reflections from reflected sources
-      // state.sources.forEach(source => {
-      //   state.walls.forEach(wall => {
-      //     const result = computeReflections(source.center, source.radius, wall, source.reflectionLevel, {startAngle: source.startAngle, endAngle: source.endAngle});
-      //     state.arcs.push(...result.arcs);
-      //   });
-      // });
+
       render();
-      // if (state.pulseRadius < state.maxRadius) {
-        requestAnimationFrame(animate);
-      // }
+      requestAnimationFrame(animate);
     }
 
     function normalizeAngle(angle) {
@@ -476,15 +590,19 @@
       ctx.stroke();
     }
 
-    // Update render function to use drawArc
     function render() {
       ctx.fillStyle = '#0a0a0a';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-      // Draw walls
+      // Draw walls (dim base)
       state.walls.forEach((wall, i) => {
         drawWall(wall, i === state.selectedWall);
       });
+
+      // Overlay visible sub-segments when toggled
+      if (state.showVisibility) {
+        state.visibleSegments.forEach(seg => drawVisibleSegment(seg));
+      }
 
       // Draw source
       ctx.fillStyle = '#ff3333';
@@ -496,15 +614,15 @@
         drawFictiveSource(source);
       });
 
-      // Draw arcs
+      // Draw reflection arcs
       state.arcs.forEach(arc => {
         drawArc(arc.center, arc.radius, arc.startAngle, arc.endAngle, arc.color);
       });
 
-      // Info
       document.getElementById('info').innerHTML = `
         Source: (${state.soundSource.x.toFixed(0)}, ${state.soundSource.y.toFixed(0)}) | 
         Walls: ${state.walls.length} | 
+        Visible segments: ${state.visibleSegments.length} |
         Pulse Radius: ${state.pulseRadius.toFixed(0)} |
         Arcs: ${state.arcs.length}
       `;
@@ -518,29 +636,25 @@
     function w(x, z) { return vec2(roomCx + x * roomScale, roomCy - z * roomScale); }
  
     const testRoomWalls = [
-      // Outer boundary
-      { a: w(-21, 20),  b: w( 21, 20)  },   // North
-      { a: w( 21,-20),  b: w(-21,-20)  },   // South
-      { a:  w( 20, 20),  b: w( 20,-20)  },   // East
-      { a: w(-20,-20),  b: w(-20, 20)  },   // West
-      // Interior walls
-      { a: w(  8, 12),  b: w(  8,  4)  },   // Interior A (vertical)
-      { a:  w(9, 12), b: w( 8, 12) },   // Interior A extension (vertical)
+      { a: w(-21, 20),  b: w( 21, 20)  },
+      { a: w( 21,-20),  b: w(-21,-20)  },
+      { a:  w( 20, 20),  b: w( 20, -20)  },
+      { a: w(-20,-20),  b: w(-20, 20)  },
+      { a: w(  8, 12),  b: w(  8,  4)  },
+      { a:  w(9, 12), b: w( 8, 12) },
       { a: w( 9,  4), b: w( 9, 12) },
       { a: w( 8, 4), b: w(9, 4) },
-      { a: w( -5, -5),  b: w(-15, -5) },   // Interior B (horizontal)
-      { a: w(-15, -5), b: w(-15, -6) },   // Interior B extension (horizontal)
+      { a: w( -5, -5),  b: w(-15, -5) },
+      { a: w(-15, -5), b: w(-15, -6) },
       { a: w(-15, -6), b: w(-5, -6) },
       { a: w(-5, -6), b: w(-5, -5) },
-      { a: w( 12, -7),  b: w( 12,-13)  },   // Interior C (vertical)
-      { a: w(13, -7), b: w( 12, -7) },   // Interior C extension (vertical)
+      { a: w( 12, -7),  b: w( 12,-13)  },
+      { a: w(13, -7), b: w( 12, -7) },
       { a: w(13, -13), b: w( 13, -7) },
       { a: w( 12, -13), b: w(13, -13) }
     ];
  
     state.walls.push(...testRoomWalls);
- 
-    // Place source in the middle of the room
     state.soundSource = w(0, 0);
 
     render();
