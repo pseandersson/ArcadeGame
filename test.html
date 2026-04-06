@@ -195,6 +195,71 @@
       return dist(P, closest);
     }
 
+    function computeSignedDistance(A, B, C) {
+      const Cp = mirrorPoint(C, A, B);
+      const normal = norm(vec2(B.y - A.y, A.x - B.x));
+      const normalDistCpToLine = Math.abs(dot(sub(A, Cp), normal));
+      const clineRayIntersection = lineRayIntersection(A, B, C, sub(Cp, C));
+
+      let distCpToLine = normalDistCpToLine;
+      if (!(clineRayIntersection !== undefined && clineRayIntersection >= 0 && clineRayIntersection <= 1)) {
+        distCpToLine = Math.min(Math.sqrt(dot(sub(Cp, A), sub(Cp, A))), Math.sqrt(dot(sub(Cp, B), sub(Cp, B))));
+      }
+      const signedDistance = dot(normal, sub(C, A));
+      return signedDistance < 0 ? -distCpToLine : distCpToLine;
+    }
+
+    function isSourceBehindWall(source, virtualSource, wall) {
+      
+      // const A = wall.a, B = wall.b;
+      // const AB = sub(B, A);
+      // const normal = norm(vec2(-AB.y, AB.x));
+      // const toVirtualSource = sub(virtualSource.originalWall.a, source);
+      
+      // const signedDistance = dot(normal, toVirtualSource);
+      // The signedDistance is not enough to determine if the source is behind the wall; we also need to check if the virtual source is on the same side of the wall as the sound source.
+      
+      const signedDistanceVirtual = computeSignedDistance(virtualSource.wall.a, virtualSource.wall.b, source);
+      const signedDistanceSource = computeSignedDistance(wall.a, wall.b, source);
+      
+      return signedDistanceSource < signedDistanceVirtual;
+    }
+
+    function coneClipping(wall, source,virtualSource) {
+      const A = wall.a, B = wall.b;
+      const coneStartDir = vec2(Math.cos(virtualSource.cone.startAngle), Math.sin(virtualSource.cone.startAngle));
+      const coneEndDir   = vec2(Math.cos(virtualSource.cone.endAngle),   Math.sin(virtualSource.cone.endAngle));
+
+      let u = [
+        lineRayIntersection(A, B, source, coneStartDir),
+        lineRayIntersection(A, B, source, coneEndDir)
+      ];
+
+      if (u.some(x => x === undefined)) {
+        const coneStartDir = vec2(Math.cos(virtualSource.cone.startAngle), Math.sin(virtualSource.cone.startAngle));
+        const coneEndDir   = vec2(Math.cos(virtualSource.cone.endAngle),   Math.sin(virtualSource.cone.endAngle));
+        const coneDir = norm(add(coneStartDir, coneEndDir));
+        const coneWidth = dot(coneDir, coneStartDir) - 1e-4; // cos(angle) between cone direction and edge directions, minus a small epsilon to allow for numerical imprecision
+
+        if (dot(coneDir, norm(sub(A, source))) > coneWidth) {
+          u.push(0);
+        }
+
+        if (dot(coneDir, norm(sub(B, source))) > coneWidth) {
+          u.push(1);
+        }
+
+        u = u.filter(x => x !== undefined);
+        if (u.length < 2) return undefined;
+      }
+
+      u = [Math.min(...u), Math.max(...u)];
+
+      if (u[1] < 0 || u[0] > 1) return undefined;
+      
+      return [Math.max(0, u[0]), Math.min(1, u[1])];
+    }
+
     // Return the visible sub-segments of `wall` from `source`,
     // split at shadow boundaries cast by all other walls.
     function getVisibleSubSegments(source, wall, allWalls, virtualSource = null) {
@@ -226,17 +291,11 @@
         if (Math.abs(sideWall) > 1e-4 && sideSource * sideWall > 0) return [];
 
         // Cone clipping
-        const coneStartDir = vec2(Math.cos(virtualSource.cone.startAngle), Math.sin(virtualSource.cone.startAngle));
-        const coneEndDir   = vec2(Math.cos(virtualSource.cone.endAngle),   Math.sin(virtualSource.cone.endAngle));
-        let u = [
-          lineRayIntersection(A, B, source, coneStartDir),
-          lineRayIntersection(A, B, source, coneEndDir)
-        ];
-        // FIX Bug 3: check for undefined BEFORE sorting / comparing
-        if (u[0] === undefined || u[1] === undefined) return [];
-        u.sort((a, b) => a - b);
-        if (u[1] < 0 || u[0] > 1) return [];
-        visible = [[Math.max(0, u[0]), Math.min(1, u[1])]];
+        const clipped = coneClipping(wall, source, virtualSource);
+
+        if (!clipped) return [];
+
+        visible = [clipped];
       }
 
       // Shadow casting
@@ -245,7 +304,7 @@
         // FIX Bug 8: skip the reflector wall itself as a shadow caster —
         // uses originalWall reference instead of fragile geometry check.
         if (virtualSource && virtualSource.originalWall === blocker) continue;
-
+        if (virtualSource && isSourceBehindWall(source, virtualSource, blocker)) continue;
         const shadow = computeShadowInterval(source, blocker, wall);
         if (shadow) {
           visible = subtractInterval(visible, shadow);
@@ -290,19 +349,8 @@
       let t = [0, 1];
 
       if (virtualSource) {
-        const coneStartDir = vec2(Math.cos(virtualSource.cone.startAngle), Math.sin(virtualSource.cone.startAngle));
-        const coneEndDir   = vec2(Math.cos(virtualSource.cone.endAngle),   Math.sin(virtualSource.cone.endAngle));
-
-        let u = [
-          lineRayIntersection(A, B, C, coneStartDir),
-          lineRayIntersection(A, B, C, coneEndDir)
-        ];
-        // FIX Bug 3: check undefined BEFORE comparing
-        if (u[0] === undefined || u[1] === undefined) return { arcs: [], sources: [] };
-        u.sort((a, b) => a - b);
-        if (u[1] < 0 || u[0] > 1) return { arcs: [], sources: [] };
-
-        t = [Math.max(0, u[0]), Math.min(1, u[1])];
+        t = coneClipping(wall, C, virtualSource);
+        if (!t) return { arcs: [], sources: [] };
 
         A = add(A, mul(AB, t[0]));
         B = add(A, mul(AB, t[1] - t[0]));
@@ -324,7 +372,7 @@
       const J = rayCircleIntersection(C, sub(B, C), C, maxRadius);
 
       if (maxRadius > distCpToLine) {
-        let G, H, E, F;
+        let G, H;
 
         const intersectionsD = lineCircleIntersection(A, B, Cp, maxRadius);
         const onWallD = intersectionsD.sort((a, b) => a.t - b.t);
@@ -334,16 +382,8 @@
           H = (onWallD[onWallD.length - 1].t >= 0 && onWallD[onWallD.length - 1].t <= 1) ? onWallD[onWallD.length - 1].point : undefined;
         }
 
-        if (!G) {
-          E = rayCircleIntersection(Cp, sub(A, Cp), Cp, maxRadius);
-        }
-
-        if (!H) {
-          F = rayCircleIntersection(Cp, sub(B, Cp), Cp, maxRadius);
-        }
-
-        const startPoint = G || E;
-        const endPoint   = H || F;
+        const startPoint = G || rayCircleIntersection(Cp, sub(A, Cp), Cp, maxRadius);
+        const endPoint   = H || rayCircleIntersection(Cp, sub(B, Cp), Cp, maxRadius);
 
         if (startPoint && endPoint && emitSource && I && J) {
           const startAngle = Math.atan2(startPoint.y - Cp.y, startPoint.x - Cp.x);
@@ -628,6 +668,16 @@
       ctx.beginPath();
       ctx.arc(source.center.x, source.center.y, 6, 0, Math.PI * 2);
       ctx.stroke();
+      ctx.beginPath();
+      const startDir = vec2(Math.cos(source.cone.startAngle), Math.sin(source.cone.startAngle));
+      const endDir   = vec2(Math.cos(source.cone.endAngle),   Math.sin(source.cone.endAngle));
+      const length = 12;
+      ctx.moveTo(source.center.x, source.center.y);
+      ctx.lineTo(source.center.x + startDir.x * length, source.center.y + startDir.y * length);
+      ctx.moveTo(source.center.x, source.center.y);
+      ctx.lineTo(source.center.x + endDir.x * length, source.center.y + endDir.y * length);
+      ctx.closePath();
+      ctx.stroke();
     }
 
     function render() {
@@ -667,7 +717,8 @@
     }
 
     const roomW = 42, roomH = 40;
-    const roomScale = Math.min(canvas.width * 0.90 / roomW, canvas.height * 0.90 / roomH);
+    const margin = 0.6;
+    const roomScale = Math.min(canvas.width * (1 - margin) / roomW, canvas.height * (1 - margin) / roomH);
     const roomCx = canvas.width  / 2;
     const roomCy = canvas.height / 2;
 
