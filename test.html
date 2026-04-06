@@ -195,34 +195,18 @@
       return dist(P, closest);
     }
 
-    function computeSignedDistance(A, B, C) {
-      const Cp = mirrorPoint(C, A, B);
-      const normal = norm(vec2(B.y - A.y, A.x - B.x));
-      const normalDistCpToLine = Math.abs(dot(sub(A, Cp), normal));
-      const clineRayIntersection = lineRayIntersection(A, B, C, sub(Cp, C));
-
-      let distCpToLine = normalDistCpToLine;
-      if (!(clineRayIntersection !== undefined && clineRayIntersection >= 0 && clineRayIntersection <= 1)) {
-        distCpToLine = Math.min(Math.sqrt(dot(sub(Cp, A), sub(Cp, A))), Math.sqrt(dot(sub(Cp, B), sub(Cp, B))));
-      }
-      const signedDistance = dot(normal, sub(C, A));
-      return signedDistance < 0 ? -distCpToLine : distCpToLine;
+    function computeSignedDistanceToWall(wall, point) {
+      const A = wall.a, B = wall.b;
+      const AB = sub(B, A);
+      const normal = norm(vec2(-AB.y, AB.x));
+      return dot(normal, sub(point, A));
     }
 
-    function isSourceBehindWall(source, virtualSource, wall) {
+    function isWallBehindVirtualWall(source, virtualSource, wall) {
+      const signedDistanceA = computeSignedDistanceToWall(virtualSource.wall, wall.a);
+      const signedDistanceB = computeSignedDistanceToWall(virtualSource.wall, wall.b);
       
-      // const A = wall.a, B = wall.b;
-      // const AB = sub(B, A);
-      // const normal = norm(vec2(-AB.y, AB.x));
-      // const toVirtualSource = sub(virtualSource.originalWall.a, source);
-      
-      // const signedDistance = dot(normal, toVirtualSource);
-      // The signedDistance is not enough to determine if the source is behind the wall; we also need to check if the virtual source is on the same side of the wall as the sound source.
-      
-      const signedDistanceVirtual = computeSignedDistance(virtualSource.wall.a, virtualSource.wall.b, source);
-      const signedDistanceSource = computeSignedDistance(wall.a, wall.b, source);
-      
-      return signedDistanceSource < signedDistanceVirtual;
+      return signedDistanceA < 0 && signedDistanceB < 0;
     }
 
     function coneClipping(wall, source,virtualSource) {
@@ -303,8 +287,11 @@
         if (blocker === wall) continue;
         // FIX Bug 8: skip the reflector wall itself as a shadow caster —
         // uses originalWall reference instead of fragile geometry check.
-        if (virtualSource && virtualSource.originalWall === blocker) continue;
-        if (virtualSource && isSourceBehindWall(source, virtualSource, blocker)) continue;
+        if (virtualSource) {
+          if (virtualSource.originalWall === blocker) continue;
+          if (isWallBehindVirtualWall(source, virtualSource, blocker)) continue;
+        }
+
         const shadow = computeShadowInterval(source, blocker, wall);
         if (shadow) {
           visible = subtractInterval(visible, shadow);
