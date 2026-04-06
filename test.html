@@ -206,6 +206,9 @@
       const signedDistanceA = computeSignedDistanceToWall(virtualSource.wall, wall.a);
       const signedDistanceB = computeSignedDistanceToWall(virtualSource.wall, wall.b);
       
+      if (dist(virtualSource.originalWall.a, wall.b) === 0 || dist(virtualSource.originalWall.b, wall.a) === 0) {
+        return signedDistanceA < 0 || signedDistanceB < 0;
+      }
       return signedDistanceA < 0 && signedDistanceB < 0;
     }
 
@@ -704,7 +707,7 @@
     }
 
     const roomW = 42, roomH = 40;
-    const margin = 0.6;
+    const margin = 0.1;
     const roomScale = Math.min(canvas.width * (1 - margin) / roomW, canvas.height * (1 - margin) / roomH);
     const roomCx = canvas.width  / 2;
     const roomCy = canvas.height / 2;
