@@ -196,16 +196,19 @@
     }
 
     function distToWall(wall, point) {
-      const normalDistCpToLine = Math.abs(dot(sub(wall.a, point), wall.normal));
-      const clineRayIntersection = lineRayIntersection(wall.a, wall.b, point, sub(point, wall.a));
+      const normalDistCpToLine = dot(sub(wall.a, point), wall.normal);
+      // Check if the perpendicular from point to the line of the wall intersects the wall segment; if not, use distance to endpoints.
+      // check if the point + mul(wall.normal, -1*normalDistCpToLine) lies between wall.a and wall.b
+      const AB = sub(wall.b, wall.a);
+      const AP = sub(add(point, mul(wall.normal, -1 * normalDistCpToLine)), wall.a);
+      const t = dot(AP, AB) / dot(AB, AB);
 
-      let distCpToLine = normalDistCpToLine;
-      if (!(clineRayIntersection !== undefined && clineRayIntersection >= 0 && clineRayIntersection <= 1)) {
-        distCpToLine = Math.min(Math.sqrt(dot(sub(point, wall.a), sub(point, wall.a))), Math.sqrt(dot(sub(point, wall.b), sub(point, wall.b))));
+      if (t < 0 || t > 1) {
+        return Math.min(dist(point, wall.a), dist(point, wall.b));
+      } else {
+        return Math.abs(normalDistCpToLine);
       }
-
-      return distCpToLine
-    }
+    }  
 
     function computeSignedDistanceToWall(wall, point) {
       return dot(wall.normal, sub(point, wall.a));
@@ -357,7 +360,7 @@
         B = add(A, mul(AB, t[1] - t[0]));
       }
 
-      const distCpToLine = distToWall(wall, Cp);
+      const distCpToLine = distToWall({a:A, b:B, normal: wall.normal}, Cp);
 
       const arcs = [];
       const sources = [];
