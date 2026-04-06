@@ -23,8 +23,8 @@
     <button id="clearWalls">Clear Walls</button>
     <button id="pulse">Pulse (Space)</button>
     <button id="toggleVisibility">Show Visibility</button>
-    <label>Radius: <input type="range" id="radiusSlider" min="10" max="1000" value="100"></label>
-    <label>Reflections: <input type="range" id="reflectionsSlider" min="1" max="3" value="2"></label>
+    <label>Radius: <input type="range" id="radiusSlider" min="10" max="3000" value="100"></label>
+    <label>Reflections: <input type="range" id="reflectionsSlider" min="1" max="5" value="2"></label>
   </div>
   <canvas id="canvas"></canvas>
   <div class="info" id="info"></div>
@@ -38,9 +38,9 @@
     const state = {
       soundSource: { x: canvas.width / 2, y: canvas.height / 2 },
       walls: [],
-      pulseRadius: 100,
-      maxRadius: 500,
-      maxReflections: 2,
+      pulseRadius: document.getElementById('radiusSlider').valueAsNumber,
+      maxRadius: document.getElementById('radiusSlider').valueAsNumber,
+      maxReflections: document.getElementById('reflectionsSlider').valueAsNumber,
       arcs: [],
       sources: [],
       selectedWall: null,
@@ -195,38 +195,52 @@
       return dist(P, closest);
     }
 
+    function distToWall(wall, point) {
+      const normalDistCpToLine = Math.abs(dot(sub(wall.a, point), wall.normal));
+      const clineRayIntersection = lineRayIntersection(wall.a, wall.b, point, sub(point, wall.a));
+
+      let distCpToLine = normalDistCpToLine;
+      if (!(clineRayIntersection !== undefined && clineRayIntersection >= 0 && clineRayIntersection <= 1)) {
+        distCpToLine = Math.min(Math.sqrt(dot(sub(point, wall.a), sub(point, wall.a))), Math.sqrt(dot(sub(point, wall.b), sub(point, wall.b))));
+      }
+
+      return distCpToLine
+    }
+
     function computeSignedDistanceToWall(wall, point) {
-      const A = wall.a, B = wall.b;
-      const AB = sub(B, A);
-      const normal = norm(vec2(-AB.y, AB.x));
-      return dot(normal, sub(point, A));
+      return dot(wall.normal, sub(point, wall.a));
     }
 
     function isWallBehindVirtualWall(source, virtualSource, wall) {
       const signedDistanceA = computeSignedDistanceToWall(virtualSource.wall, wall.a);
       const signedDistanceB = computeSignedDistanceToWall(virtualSource.wall, wall.b);
       
+      if ((signedDistanceA < 0 && signedDistanceB > 0) || (signedDistanceA > 0 && signedDistanceB < 0)) {
+        const sourceDistVirtual = distToWall(virtualSource.wall, source);
+        const sourceDistWall = distToWall(wall, source);
+        // If the source is closer to the virtual wall than the current wall, treat it as behind the virtual wall.
+        if (sourceDistVirtual > sourceDistWall - 1e-4) {
+          return true;
+        } 
+      }
+      // If either endpoint is behind the virtual wall, check if it's a shared edge case.
       if (dist(virtualSource.originalWall.a, wall.b) === 0 || dist(virtualSource.originalWall.b, wall.a) === 0) {
         return signedDistanceA < 0 || signedDistanceB < 0;
       }
       return signedDistanceA < 0 && signedDistanceB < 0;
     }
 
-    function coneClipping(wall, source,virtualSource) {
+    function coneClipping(wall, source, virtualSource) {
       const A = wall.a, B = wall.b;
-      const coneStartDir = vec2(Math.cos(virtualSource.cone.startAngle), Math.sin(virtualSource.cone.startAngle));
-      const coneEndDir   = vec2(Math.cos(virtualSource.cone.endAngle),   Math.sin(virtualSource.cone.endAngle));
 
       let u = [
-        lineRayIntersection(A, B, source, coneStartDir),
-        lineRayIntersection(A, B, source, coneEndDir)
+        lineRayIntersection(A, B, source, virtualSource.cone.startDir),
+        lineRayIntersection(A, B, source, virtualSource.cone.endDir)
       ];
 
       if (u.some(x => x === undefined)) {
-        const coneStartDir = vec2(Math.cos(virtualSource.cone.startAngle), Math.sin(virtualSource.cone.startAngle));
-        const coneEndDir   = vec2(Math.cos(virtualSource.cone.endAngle),   Math.sin(virtualSource.cone.endAngle));
-        const coneDir = norm(add(coneStartDir, coneEndDir));
-        const coneWidth = dot(coneDir, coneStartDir) - 1e-4; // cos(angle) between cone direction and edge directions, minus a small epsilon to allow for numerical imprecision
+        const coneDir = norm(add(virtualSource.cone.startDir, virtualSource.cone.endDir));
+        const coneWidth = dot(coneDir, virtualSource.cone.startDir) - 1e-4; // cos(angle) between cone direction and edge directions, minus a small epsilon to allow for numerical imprecision
 
         if (dot(coneDir, norm(sub(A, source))) > coneWidth) {
           u.push(0);
@@ -255,8 +269,7 @@
 
       if (len(AB) < 1e-6) return [];
 
-      const normal = norm(vec2(-AB.y, AB.x));
-      if (dot(normal, sub(source, A)) <= 0) return [];
+      if (dot(wall.normal, sub(source, A)) <= 0) return [];
 
       let visible = [[0, 1]];
 
@@ -266,8 +279,7 @@
 
         // FIX Bugs 4 & 5: use the reflector wall's normal for the half-space check.
         // The virtual source is behind the reflector; any wall on the same side should be skipped.
-        const rAB = sub(virtualSource.originalWall.b, virtualSource.originalWall.a);
-        const rNormal = vec2(-rAB.y, rAB.x); // reflector wall normal (unnormalized)
+        const rNormal = virtualSource.originalWall.normal;
         const rMid = mul(add(virtualSource.originalWall.a, virtualSource.originalWall.b), 0.5);
         const wallMid = mul(add(wall.a, wall.b), 0.5);
         const sideSource = dot(rNormal, sub(source, rMid));
@@ -306,7 +318,8 @@
         .filter(([t0, t1]) => t1 - t0 > 1e-4)
         .map(([t0, t1]) => ({
           a: add(A, mul(AB, t0)),
-          b: add(A, mul(AB, t1))
+          b: add(A, mul(AB, t1)),
+          normal: wall.normal
         }));
     }
 
@@ -326,10 +339,8 @@
       const cross = cross2d(sub(A, source), sub(B, source));
       if (Math.abs(cross) < 1) return { arcs: [], sources: [] };
 
-      let normal = norm(vec2(-AB.y, AB.x));
-
       const toSource = norm(sub(source, A));
-      if (dot(normal, toSource) < 0) {
+      if (dot(wall.normal, toSource) < 0) {
         return { arcs: [], sources: [] };
       }
 
@@ -346,13 +357,7 @@
         B = add(A, mul(AB, t[1] - t[0]));
       }
 
-      const normalDistCpToLine = Math.abs(dot(sub(A, Cp), normal));
-      const clineRayIntersection = lineRayIntersection(A, B, C, sub(Cp, C));
-
-      let distCpToLine = normalDistCpToLine;
-      if (!(clineRayIntersection !== undefined && clineRayIntersection >= 0 && clineRayIntersection <= 1)) {
-        distCpToLine = Math.min(Math.sqrt(dot(sub(Cp, A), sub(Cp, A))), Math.sqrt(dot(sub(Cp, B), sub(Cp, B))));
-      }
+      const distCpToLine = distToWall(wall, Cp);
 
       const arcs = [];
       const sources = [];
@@ -384,11 +389,11 @@
             radius: maxRadius,
             startAngle,
             endAngle,
-            wall: { a: A, b: B },
+            wall: { a: A, b: B, normal: wall.normal },
             // FIX Bug 2 & 8: carry the original state.walls reference forward
             originalWall: originalWall || wall,
             reflectionLevel: reflectionLevel + 1,
-            cone: { startAngle, endAngle }
+            cone: { startDir: norm(sub(startPoint, Cp)), endDir: norm(sub(endPoint, Cp)) },
           });
         }
 
@@ -439,8 +444,7 @@
       ctx.stroke();
 
       const mid = mul(add(wall.a, wall.b), 0.5);
-      const AB  = sub(wall.b, wall.a);
-      const n   = norm(vec2(-AB.y, AB.x));
+      const n   = wall.normal;
       ctx.strokeStyle = '#445566';
       ctx.lineWidth   = 1;
       ctx.beginPath();
@@ -659,8 +663,8 @@
       ctx.arc(source.center.x, source.center.y, 6, 0, Math.PI * 2);
       ctx.stroke();
       ctx.beginPath();
-      const startDir = vec2(Math.cos(source.cone.startAngle), Math.sin(source.cone.startAngle));
-      const endDir   = vec2(Math.cos(source.cone.endAngle),   Math.sin(source.cone.endAngle));
+      const startDir = source.cone.startDir;
+      const endDir   = source.cone.endDir;
       const length = 12;
       ctx.moveTo(source.center.x, source.center.y);
       ctx.lineTo(source.center.x + startDir.x * length, source.center.y + startDir.y * length);
@@ -671,6 +675,9 @@
     }
 
     function render() {
+      if (!state.pulseRadius) {
+        return
+      }
       ctx.fillStyle = '#0a0a0a';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
@@ -707,7 +714,7 @@
     }
 
     const roomW = 42, roomH = 40;
-    const margin = 0.1;
+    const margin = 0.5;
     const roomScale = Math.min(canvas.width * (1 - margin) / roomW, canvas.height * (1 - margin) / roomH);
     const roomCx = canvas.width  / 2;
     const roomCy = canvas.height / 2;
@@ -717,13 +724,13 @@
     const testRoomWalls = [
       { a: w(-21, 20),  b: w( 21, 20)  },
       { a: w( 21,-20),  b: w(-21,-20)  },
-      { a: w( 20, 20),  b: w( 20,-20)  },
-      { a: w(-20,-20),  b: w(-20, 20)  },
+      { a: w( 20, 20),  b: w( 20,-20), debug: 'East'  },
+      { a: w(-20,-20),  b: w(-20, 20), debug: 'West'  },
       { a: w(  8, 12),  b: w(  8,  4)  },
       { a: w(  9, 12),  b: w(  8, 12)  },
       { a: w(  9,  4),  b: w(  9, 12)  },
       { a: w(  8,  4),  b: w(  9,  4)  },
-      { a: w( -5, -5),  b: w(-15, -5)  },
+      { a: w( -5, -5),  b: w(-15, -5), debug: 'Target'  },
       { a: w(-15, -5),  b: w(-15, -6)  },
       { a: w(-15, -6),  b: w( -5, -6)  },
       { a: w( -5, -6),  b: w( -5, -5)  },
@@ -733,7 +740,20 @@
       { a: w( 12,-13),  b: w( 13,-13)  }
     ];
 
-    state.walls.push(...testRoomWalls);
+    function computeNormals(walls) {
+      return walls.map(wall => {
+        const AB = sub(wall.b, wall.a);
+        const normal = norm(vec2(-AB.y, AB.x));
+        return { ...wall, normal };
+      });
+    }
+
+    function bakeWalls(walls) {
+      let w1 = computeNormals(walls);
+      return w1;
+    }
+
+    state.walls.push(...bakeWalls(testRoomWalls));
     state.soundSource = w(0, 0);
 
     render();
