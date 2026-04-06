@@ -7,13 +7,42 @@
   <style>
     body { margin: 0; padding: 20px; font-family: monospace; background: #1a1a1a; color: #eee; }
     canvas { border: 1px solid #444; display: block; background: #0a0a0a; cursor: crosshair; }
-    .controls { margin: 20px 0; display: flex; gap: 10px; flex-wrap: wrap; }
+    .controls { margin: 20px 0; display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
     button { padding: 8px 16px; background: #333; color: #eee; border: 1px solid #666; cursor: pointer; }
     button:hover { background: #444; }
     button.active { background: #226; border-color: #66f; }
-    .info { margin-top: 20px; font-size: 12px; }
+    .info { margin-top: 10px; font-size: 12px; }
     input[type="range"] { width: 200px; }
     label { display: inline-block; margin-right: 15px; }
+
+    #bakeOverlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.6);
+      z-index: 10;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 16px;
+      font-size: 14px;
+      color: #eee;
+    }
+    #bakeOverlay.visible { display: flex; }
+    #bakeBarWrap {
+      width: 320px;
+      height: 14px;
+      background: #333;
+      border: 1px solid #666;
+      border-radius: 4px;
+      overflow: hidden;
+    }
+    #bakeBar {
+      height: 100%;
+      width: 0%;
+      background: #4af;
+      transition: width 0.1s linear;
+    }
   </style>
 </head>
 <body>
@@ -23,11 +52,17 @@
     <button id="clearWalls">Clear Walls</button>
     <button id="pulse">Pulse (Space)</button>
     <button id="toggleVisibility">Show Visibility</button>
+    <button id="toggleVisGraph">Show Vis Graph</button>
     <label>Radius: <input type="range" id="radiusSlider" min="10" max="3000" value="100"></label>
     <label>Reflections: <input type="range" id="reflectionsSlider" min="1" max="5" value="2"></label>
   </div>
   <canvas id="canvas"></canvas>
   <div class="info" id="info"></div>
+
+  <div id="bakeOverlay">
+    <div id="bakeLabel">Baking visibility…</div>
+    <div id="bakeBarWrap"><div id="bakeBar"></div></div>
+  </div>
 
   <script>
     const canvas = document.getElementById('canvas');
@@ -35,10 +70,22 @@
     canvas.width = window.innerWidth - 40;
     canvas.height = window.innerHeight - 200;
 
+    // === ROOM SCALE (defined early so BAKE_* constants can reference it) ===
+    const roomW = 42, roomH = 40;
+    const margin = 0.5;
+    const roomScale = Math.min(canvas.width * (1 - margin) / roomW, canvas.height * (1 - margin) / roomH);
+    const roomCx = canvas.width  / 2;
+    const roomCy = canvas.height / 2;
+
+    // === BAKE CONSTANTS ===
+    const BAKE_STEP          = roomScale;         // 1 world unit in pixels between samples
+    const BAKE_ALONG_OFFSET  = 0.5  * roomScale;  // start 0.5 wu in from endpoint
+    const BAKE_NORMAL_OFFSET = 0.25 * roomScale;  // lift 0.25 wu off the wall surface
+
     const state = {
       soundSource: { x: canvas.width / 2, y: canvas.height / 2 },
       walls: [],
-      pulseRadius: document.getElementById('radiusSlider').valueAsNumber,
+      pulseRadius: 0,
       maxRadius: document.getElementById('radiusSlider').valueAsNumber,
       maxReflections: document.getElementById('reflectionsSlider').valueAsNumber,
       arcs: [],
@@ -49,8 +96,29 @@
       creatingWall: false,
       wallStart: null,
       showVisibility: false,
-      visibleSegments: []
+      showVisGraph: false,
+      visibleSegments: [],
+      baking: false,
     };
+
+    // === FPS COUNTER ===
+    const fpsWindow = [];
+    const FPS_SAMPLES = 30;
+    let lastFrameTime = null;
+
+    function updateFps() {
+      const now = performance.now();
+      if (lastFrameTime !== null) {
+        fpsWindow.push(1000 / (now - lastFrameTime));
+        if (fpsWindow.length > FPS_SAMPLES) fpsWindow.shift();
+      }
+      lastFrameTime = now;
+    }
+
+    function getFps() {
+      if (fpsWindow.length === 0) return 0;
+      return fpsWindow.reduce((a, b) => a + b, 0) / fpsWindow.length;
+    }
 
     // === GEOMETRY UTILITIES ===
     function vec2(x, y) { return { x, y }; }
@@ -63,7 +131,6 @@
     function dist(a, b) { return len(sub(b, a)); }
     function cross2d(a, b) { return a.x * b.y - a.y * b.x; }
 
-    // Mirror point P across line AB
     function mirrorPoint(P, A, B) {
       const AB = sub(B, A);
       const AP = sub(P, A);
@@ -72,33 +139,26 @@
       return add(closest, mul(sub(closest, P), 1));
     }
 
-    // Line-circle intersection: returns array of {t, point, angle}
     function lineCircleIntersection(A, B, center, radius) {
       const AB = sub(B, A);
       const AC = sub(center, A);
       const t_closest = dot(AC, AB) / dot(AB, AB);
       const closest = add(A, mul(AB, t_closest));
       const distToLine = dist(closest, center);
-
       if (distToLine > radius + 1e-6) return [];
-
       const halfChord = Math.sqrt(Math.max(0, radius * radius - distToLine * distToLine));
       const denominator = dot(AB, AB);
       if (denominator < 1e-6) return [];
-
       const t1 = t_closest - halfChord / len(AB);
       const t2 = t_closest + halfChord / len(AB);
-
       const p1 = add(A, mul(AB, t1));
       const p2 = add(A, mul(AB, t2));
-
       return [
         { t: t1, point: p1, angle: Math.atan2(p1.y - center.y, p1.x - center.x) },
         { t: t2, point: p2, angle: Math.atan2(p2.y - center.y, p2.x - center.x) }
       ];
     }
 
-    // Ray-circle intersection
     function rayCircleIntersection(rayOrigin, rayDir, center, radius) {
       const oc = sub(rayOrigin, center);
       const d = norm(rayDir);
@@ -106,36 +166,25 @@
       const b = 2 * dot(oc, d);
       const c = dot(oc, oc) - radius * radius;
       const disc = b * b - 4 * a * c;
-
       if (disc < 0) return null;
-
       const t1 = (-b - Math.sqrt(disc)) / (2 * a);
       const t2 = (-b + Math.sqrt(disc)) / (2 * a);
       const t = t1 >= 0 ? t1 : (t2 >= 0 ? t2 : null);
-
       return t !== null ? add(rayOrigin, mul(d, t)) : null;
     }
 
-    // Returns parametric t on line AB where ray from rayOrigin in rayDir hits it.
-    // u is the ray parameter (u >= 0 means forward).
     function lineRayIntersection(A, B, rayOrigin, rayDir) {
       const AB = sub(B, A);
       const AC = sub(rayOrigin, A);
       const det = AB.x * (-rayDir.y) - AB.y * (-rayDir.x);
-
       if (Math.abs(det) < 1e-6) return undefined;
-
       const t = (AC.x * (-rayDir.y) - AC.y * (-rayDir.x)) / det;
       const u = (AB.x * AC.y - AB.y * AC.x) / det;
-
-      if (u >= 0) {
-        return t;
-      }
+      if (u >= 0) return t;
       return undefined;
     }
 
     // === VISIBILITY UTILITIES ===
-
     function segmentsProperlyIntersect(A, B, C, D) {
       const d1 = cross2d(sub(D, C), sub(A, C));
       const d2 = cross2d(sub(D, C), sub(B, C));
@@ -150,27 +199,16 @@
     function computeShadowInterval(source, blocker, wall) {
       const A = wall.a, B = wall.b;
       const AB = sub(B, A);
-
       let tA = lineRayIntersection(A, B, source, sub(blocker.a, source));
       let tB = lineRayIntersection(A, B, source, sub(blocker.b, source));
-
       if (tA === undefined && tB === undefined) return null;
-
-      if (tA === undefined) {
-        tA = dot(sub(blocker.a, A), AB) / dot(AB, AB) > 0.5 ? 1 : 0;
-      }
-      if (tB === undefined) {
-        tB = dot(sub(blocker.b, A), AB) / dot(AB, AB) > 0.5 ? 1 : 0;
-      }
-
+      if (tA === undefined) tA = dot(sub(blocker.a, A), AB) / dot(AB, AB) > 0.5 ? 1 : 0;
+      if (tB === undefined) tB = dot(sub(blocker.b, A), AB) / dot(AB, AB) > 0.5 ? 1 : 0;
       let t0 = Math.max(0, Math.min(tA, tB));
       let t1 = Math.min(1, Math.max(tA, tB));
-
       if (t1 - t0 < 1e-6) return null;
-
       const mid = add(A, mul(AB, (t0 + t1) * 0.5));
       if (!segmentsProperlyIntersect(source, mid, blocker.a, blocker.b)) return null;
-
       return [t0, t1];
     }
 
@@ -198,13 +236,11 @@
     function distToWall(wall, point) {
       const normalDistCpToLine = Math.abs(dot(sub(wall.a, point), wall.normal));
       const clineRayIntersection = lineRayIntersection(wall.a, wall.b, point, sub(point, wall.a));
-
       let distCpToLine = normalDistCpToLine;
       if (!(clineRayIntersection !== undefined && clineRayIntersection >= 0 && clineRayIntersection <= 1)) {
         distCpToLine = Math.min(Math.sqrt(dot(sub(point, wall.a), sub(point, wall.a))), Math.sqrt(dot(sub(point, wall.b), sub(point, wall.b))));
       }
-
-      return distCpToLine
+      return distCpToLine;
     }
 
     function computeSignedDistanceToWall(wall, point) {
@@ -214,16 +250,11 @@
     function isWallBehindVirtualWall(source, virtualSource, wall) {
       const signedDistanceA = computeSignedDistanceToWall(virtualSource.wall, wall.a);
       const signedDistanceB = computeSignedDistanceToWall(virtualSource.wall, wall.b);
-      
       if ((signedDistanceA < 0 && signedDistanceB > 0) || (signedDistanceA > 0 && signedDistanceB < 0)) {
         const sourceDistVirtual = distToWall(virtualSource.wall, source);
         const sourceDistWall = distToWall(wall, source);
-        // If the source is closer to the virtual wall than the current wall, treat it as behind the virtual wall.
-        if (sourceDistVirtual > sourceDistWall - 1e-4) {
-          return true;
-        } 
+        if (sourceDistVirtual > sourceDistWall - 1e-4) return true;
       }
-      // If either endpoint is behind the virtual wall, check if it's a shared edge case.
       if (dist(virtualSource.originalWall.a, wall.b) === 0 || dist(virtualSource.originalWall.b, wall.a) === 0) {
         return signedDistanceA < 0 || signedDistanceB < 0;
       }
@@ -232,85 +263,52 @@
 
     function coneClipping(wall, source, virtualSource) {
       const A = wall.a, B = wall.b;
-
       let u = [
         lineRayIntersection(A, B, source, virtualSource.cone.startDir),
         lineRayIntersection(A, B, source, virtualSource.cone.endDir)
       ];
-
       if (u.some(x => x === undefined)) {
         const coneDir = norm(add(virtualSource.cone.startDir, virtualSource.cone.endDir));
-        const coneWidth = dot(coneDir, virtualSource.cone.startDir) - 1e-4; // cos(angle) between cone direction and edge directions, minus a small epsilon to allow for numerical imprecision
-
-        if (dot(coneDir, norm(sub(A, source))) > coneWidth) {
-          u.push(0);
-        }
-
-        if (dot(coneDir, norm(sub(B, source))) > coneWidth) {
-          u.push(1);
-        }
-
+        const coneWidth = dot(coneDir, virtualSource.cone.startDir) - 1e-4;
+        if (dot(coneDir, norm(sub(A, source))) > coneWidth) u.push(0);
+        if (dot(coneDir, norm(sub(B, source))) > coneWidth) u.push(1);
         u = u.filter(x => x !== undefined);
         if (u.length < 2) return undefined;
       }
-
       u = [Math.min(...u), Math.max(...u)];
-
       if (u[1] < 0 || u[0] > 1) return undefined;
-      
       return [Math.max(0, u[0]), Math.min(1, u[1])];
     }
 
-    // Return the visible sub-segments of `wall` from `source`,
-    // split at shadow boundaries cast by all other walls.
     function getVisibleSubSegments(source, wall, allWalls, virtualSource = null) {
       const A = wall.a, B = wall.b;
       const AB = sub(B, A);
-
       if (len(AB) < 1e-6) return [];
-
       if (dot(wall.normal, sub(source, A)) <= 0) return [];
 
       let visible = [[0, 1]];
 
       if (virtualSource) {
-        // FIX Bug 2: compare by originalWall reference (from state.walls), not sub-segment object
         if (virtualSource.originalWall === wall) return [];
-
-        // FIX Bugs 4 & 5: use the reflector wall's normal for the half-space check.
-        // The virtual source is behind the reflector; any wall on the same side should be skipped.
         const rNormal = virtualSource.originalWall.normal;
         const rMid = mul(add(virtualSource.originalWall.a, virtualSource.originalWall.b), 0.5);
         const wallMid = mul(add(wall.a, wall.b), 0.5);
         const sideSource = dot(rNormal, sub(source, rMid));
         const sideWall   = dot(rNormal, sub(wallMid, rMid));
-        // If both are on the same side (product > 0), wall is behind the reflector → skip.
-        // Allow walls nearly coplanar with the reflector (|sideWall| < 1e-4) to pass through
-        // so adjacent room walls aren't incorrectly culled.
         if (Math.abs(sideWall) > 1e-4 && sideSource * sideWall > 0) return [];
-
-        // Cone clipping
         const clipped = coneClipping(wall, source, virtualSource);
-
         if (!clipped) return [];
-
         visible = [clipped];
       }
 
-      // Shadow casting
       for (const blocker of allWalls) {
         if (blocker === wall) continue;
-        // FIX Bug 8: skip the reflector wall itself as a shadow caster —
-        // uses originalWall reference instead of fragile geometry check.
         if (virtualSource) {
           if (virtualSource.originalWall === blocker) continue;
           if (isWallBehindVirtualWall(source, virtualSource, blocker)) continue;
         }
-
         const shadow = computeShadowInterval(source, blocker, wall);
-        if (shadow) {
-          visible = subtractInterval(visible, shadow);
-        }
+        if (shadow) visible = subtractInterval(visible, shadow);
         if (visible.length === 0) break;
       }
 
@@ -323,13 +321,77 @@
         }));
     }
 
+    // === WALL-TO-WALL VISIBILITY BAKE ===
+    function wallsAreVisible(A, B, allWalls) {
+      const AB = sub(A.b, A.a);
+      const wallLen = len(AB);
+      const dir = norm(AB);
+      const normalOffset = mul(A.normal, BAKE_NORMAL_OFFSET);
+
+      // Midpoint fallback for very short walls
+      const samples = wallLen < BAKE_ALONG_OFFSET
+        ? [mul(add(A.a, A.b), 0.5)]
+        : [];
+
+      let d = BAKE_ALONG_OFFSET;
+      while (d < wallLen) {
+        samples.push(add(A.a, mul(dir, d)));
+        d += BAKE_STEP;
+      }
+
+      for (const onWall of samples) {
+        const samplePoint = add(onWall, normalOffset);
+        const segs = getVisibleSubSegments(samplePoint, B, allWalls);
+        if (segs.length > 0) return true;
+      }
+      return false;
+    }
+
+    // Async bake with progress bar
+    function rebakeVisibility(walls) {
+      return new Promise(resolve => {
+        const overlay  = document.getElementById('bakeOverlay');
+        const bar      = document.getElementById('bakeBar');
+        const label    = document.getElementById('bakeLabel');
+        const total    = walls.length * walls.length;
+        let   done     = 0;
+        let   i        = 0;
+
+        // Initialise visibleWalls on every wall
+        walls.forEach(w => { w.visibleWalls = []; });
+
+        overlay.classList.add('visible');
+        state.baking = true;
+
+        function processRow() {
+          if (i >= walls.length) {
+            overlay.classList.remove('visible');
+            state.baking = false;
+            resolve();
+            return;
+          }
+          const A = walls[i];
+          for (let j = 0; j < walls.length; j++) {
+            const B = walls[j];
+            if (A !== B && wallsAreVisible(A, B, walls)) {
+              A.visibleWalls.push(B);
+            }
+            done++;
+          }
+          i++;
+          const pct = (done / total * 100).toFixed(1);
+          bar.style.width = pct + '%';
+          label.textContent = `Baking visibility… ${pct}%`;
+          setTimeout(processRow, 0); // yield to browser between rows
+        }
+
+        processRow();
+      });
+    }
 
     // === REFLECTION ALGORITHM ===
-    // FIX Bug 1 (partial): added `originalWall` parameter so virtual sources
-    // carry the correct state.walls reference forward.
     function computeReflections(source, maxRadius, wall, reflectionLevel = 0, virtualSource = undefined, originalWall = undefined) {
       if (reflectionLevel >= state.maxReflections) return { arcs: [], sources: [] };
-
       const emitSource = reflectionLevel < state.maxReflections - 1;
 
       let A = wall.a;
@@ -340,57 +402,46 @@
       if (Math.abs(cross) < 1) return { arcs: [], sources: [] };
 
       const toSource = norm(sub(source, A));
-      if (dot(wall.normal, toSource) < 0) {
-        return { arcs: [], sources: [] };
-      }
+      if (dot(wall.normal, toSource) < 0) return { arcs: [], sources: [] };
 
       const C = source;
       const Cp = mirrorPoint(C, A, B);
 
       let t = [0, 1];
-
       if (virtualSource) {
         t = coneClipping(wall, C, virtualSource);
         if (!t) return { arcs: [], sources: [] };
-
         A = add(A, mul(AB, t[0]));
         B = add(A, mul(AB, t[1] - t[0]));
       }
 
       const distCpToLine = distToWall(wall, Cp);
-
       const arcs = [];
       const sources = [];
 
-      // FIX Bug 1: use `const` to avoid implicit global pollution across recursive calls
       const I = rayCircleIntersection(C, sub(A, C), C, maxRadius);
       const J = rayCircleIntersection(C, sub(B, C), C, maxRadius);
 
       if (maxRadius > distCpToLine) {
         let G, H;
-
         const intersectionsD = lineCircleIntersection(A, B, Cp, maxRadius);
         const onWallD = intersectionsD.sort((a, b) => a.t - b.t);
-
         if (onWallD.length >= 2) {
           G = (onWallD[0].t >= 0 && onWallD[0].t <= 1) ? onWallD[0].point : undefined;
           H = (onWallD[onWallD.length - 1].t >= 0 && onWallD[onWallD.length - 1].t <= 1) ? onWallD[onWallD.length - 1].point : undefined;
         }
-
         const startPoint = G || rayCircleIntersection(Cp, sub(A, Cp), Cp, maxRadius);
         const endPoint   = H || rayCircleIntersection(Cp, sub(B, Cp), Cp, maxRadius);
 
         if (startPoint && endPoint && emitSource && I && J) {
           const startAngle = Math.atan2(startPoint.y - Cp.y, startPoint.x - Cp.x);
           const endAngle   = Math.atan2(endPoint.y   - Cp.y, endPoint.x   - Cp.x);
-
           sources.push({
             center: Cp,
             radius: maxRadius,
             startAngle,
             endAngle,
             wall: { a: A, b: B, normal: wall.normal },
-            // FIX Bug 2 & 8: carry the original state.walls reference forward
             originalWall: originalWall || wall,
             reflectionLevel: reflectionLevel + 1,
             cone: { startDir: norm(sub(startPoint, Cp)), endDir: norm(sub(endPoint, Cp)) },
@@ -399,40 +450,35 @@
 
         const startPointGI = G || I;
         if (startPointGI && I) {
-          const startAngle = Math.atan2(startPointGI.y - C.y, startPointGI.x - C.x);
-          const endAngle   = Math.atan2(I.y - C.y, I.x - C.x);
           arcs.push({
-            center: C, radius: maxRadius, startAngle, endAngle,
-            reflectionLevel,
-            color: 'rgba(255, 150, 100, 0.8)'
+            center: C, radius: maxRadius,
+            startAngle: Math.atan2(startPointGI.y - C.y, startPointGI.x - C.x),
+            endAngle:   Math.atan2(I.y - C.y, I.x - C.x),
+            reflectionLevel, color: 'rgba(255, 150, 100, 0.8)'
           });
         }
-
         const endPointHJ = H || J;
         if (J && endPointHJ) {
-          const startAngle = Math.atan2(J.y - C.y, J.x - C.x);
-          const endAngle   = Math.atan2(endPointHJ.y - C.y, endPointHJ.x - C.x);
           arcs.push({
-            center: C, radius: maxRadius, startAngle, endAngle,
-            reflectionLevel,
-            color: 'rgba(255, 150, 100, 0.8)'
+            center: C, radius: maxRadius,
+            startAngle: Math.atan2(J.y - C.y, J.x - C.x),
+            endAngle:   Math.atan2(endPointHJ.y - C.y, endPointHJ.x - C.x),
+            reflectionLevel, color: 'rgba(255, 150, 100, 0.8)'
           });
         }
       } else {
         if (I && J) {
-          const startAngle = Math.atan2(J.y - C.y, J.x - C.x);
-          const endAngle   = Math.atan2(I.y - C.y, I.x - C.x);
           arcs.push({
-            center: C, radius: maxRadius, startAngle, endAngle,
-            reflectionLevel,
-            color: 'rgba(255, 255, 100, 0.8)'
+            center: C, radius: maxRadius,
+            startAngle: Math.atan2(J.y - C.y, J.x - C.x),
+            endAngle:   Math.atan2(I.y - C.y, I.x - C.x),
+            reflectionLevel, color: 'rgba(255, 255, 100, 0.8)'
           });
         }
       }
 
       return { arcs, sources };
     }
-
 
     // === RENDERING ===
     function drawWall(wall, isSelected = false) {
@@ -464,18 +510,29 @@
       ctx.moveTo(seg.a.x, seg.a.y);
       ctx.lineTo(seg.b.x, seg.b.y);
       ctx.stroke();
-
       ctx.fillStyle = 'rgba(80, 255, 120, 0.9)';
-      ctx.beginPath();
-      ctx.arc(seg.a.x, seg.a.y, 3, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.beginPath();
-      ctx.arc(seg.b.x, seg.b.y, 3, 0, Math.PI * 2);
-      ctx.fill();
+      ctx.beginPath(); ctx.arc(seg.a.x, seg.a.y, 3, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(seg.b.x, seg.b.y, 3, 0, Math.PI * 2); ctx.fill();
+    }
+
+    function drawVisibilityGraph() {
+      ctx.strokeStyle = 'rgba(100, 180, 255, 0.15)';
+      ctx.lineWidth = 1;
+      for (const wall of state.walls) {
+        const mA = mul(add(wall.a, wall.b), 0.5);
+        for (const other of (wall.visibleWalls || [])) {
+          const mB = mul(add(other.a, other.b), 0.5);
+          ctx.beginPath();
+          ctx.moveTo(mA.x, mA.y);
+          ctx.lineTo(mB.x, mB.y);
+          ctx.stroke();
+        }
+      }
     }
 
     // === EVENTS ===
     canvas.addEventListener('mousedown', (e) => {
+      if (state.baking) return;
       const rect = canvas.getBoundingClientRect();
       const pos = vec2(e.clientX - rect.left, e.clientY - rect.top);
 
@@ -483,63 +540,64 @@
         state.dragOffset = sub(state.soundSource, pos);
         return;
       }
-
       for (let i = 0; i < state.walls.length; i++) {
         const wall = state.walls[i];
-        if (dist(pos, wall.a) < 8) {
-          state.selectedWall = i;
-          state.selectedEndpoint = 'a';
-          state.dragOffset = sub(wall.a, pos);
-          return;
-        }
-        if (dist(pos, wall.b) < 8) {
-          state.selectedWall = i;
-          state.selectedEndpoint = 'b';
-          state.dragOffset = sub(wall.b, pos);
-          return;
-        }
+        if (dist(pos, wall.a) < 8) { state.selectedWall = i; state.selectedEndpoint = 'a'; state.dragOffset = sub(wall.a, pos); return; }
+        if (dist(pos, wall.b) < 8) { state.selectedWall = i; state.selectedEndpoint = 'b'; state.dragOffset = sub(wall.b, pos); return; }
       }
-
       state.creatingWall = true;
       state.wallStart = pos;
     });
 
     canvas.addEventListener('mousemove', (e) => {
+      if (state.baking) return;
       const rect = canvas.getBoundingClientRect();
       const pos = vec2(e.clientX - rect.left, e.clientY - rect.top);
-
       if (state.dragOffset) {
         if (state.selectedWall === null) {
           state.soundSource = add(pos, state.dragOffset);
         } else {
           const wall = state.walls[state.selectedWall];
-          if (state.selectedEndpoint === 'a') {
-            wall.a = add(pos, state.dragOffset);
-          } else {
-            wall.b = add(pos, state.dragOffset);
-          }
+          if (state.selectedEndpoint === 'a') wall.a = add(pos, state.dragOffset);
+          else wall.b = add(pos, state.dragOffset);
         }
       }
       render();
     });
 
-    canvas.addEventListener('mouseup', () => {
+    canvas.addEventListener('mouseup', async (e) => {
+      if (state.baking) return;
       if (state.creatingWall && state.wallStart) {
         const rect = canvas.getBoundingClientRect();
-        const pos = vec2(event.clientX - rect.left, event.clientY - rect.top);
+        const pos = vec2(e.clientX - rect.left, e.clientY - rect.top);
         if (dist(state.wallStart, pos) > 10) {
-          state.walls.push({ a: state.wallStart, b: pos });
+          const AB = sub(pos, state.wallStart);
+          const normal = norm(vec2(-AB.y, AB.x));
+          state.walls.push({ a: state.wallStart, b: pos, normal, visibleWalls: [] });
+          await rebakeVisibility(state.walls);
         }
         state.creatingWall = false;
       }
+      const wasDraggingEndpoint = state.selectedWall !== null;
       state.dragOffset = null;
       state.selectedWall = null;
       state.selectedEndpoint = null;
+      if (wasDraggingEndpoint) {
+        // Recompute normals for moved wall then rebake
+        state.walls.forEach(w => {
+          const AB = sub(w.b, w.a);
+          w.normal = norm(vec2(-AB.y, AB.x));
+        });
+        await rebakeVisibility(state.walls);
+      }
       render();
     });
 
-    document.getElementById('addWall').addEventListener('click', () => {
-      state.walls.push({ a: vec2(100, 100), b: vec2(300, 100) });
+    document.getElementById('addWall').addEventListener('click', async () => {
+      const AB = sub(vec2(300, 100), vec2(100, 100));
+      const normal = norm(vec2(-AB.y, AB.x));
+      state.walls.push({ a: vec2(100, 100), b: vec2(300, 100), normal, visibleWalls: [] });
+      await rebakeVisibility(state.walls);
       render();
     });
 
@@ -551,6 +609,7 @@
     });
 
     document.getElementById('pulse').addEventListener('click', () => {
+      if (state.baking) return;
       state.pulseRadius = 0;
       animate();
     });
@@ -558,6 +617,12 @@
     document.getElementById('toggleVisibility').addEventListener('click', (e) => {
       state.showVisibility = !state.showVisibility;
       e.target.classList.toggle('active', state.showVisibility);
+      render();
+    });
+
+    document.getElementById('toggleVisGraph').addEventListener('click', (e) => {
+      state.showVisGraph = !state.showVisGraph;
+      e.target.classList.toggle('active', state.showVisGraph);
       render();
     });
 
@@ -570,13 +635,11 @@
     });
 
     document.addEventListener('keydown', (e) => {
-      if (e.code === 'Space') {
-        e.preventDefault();
-        document.getElementById('pulse').click();
-      }
+      if (e.code === 'Space') { e.preventDefault(); document.getElementById('pulse').click(); }
     });
 
     function animate() {
+      if (state.baking) return;
       state.pulseRadius = state.maxRadius;
       state.arcs = [];
       state.sources = [];
@@ -584,48 +647,36 @@
 
       const queue = [];
 
-      // Enqueue primary source reflections — carry originalWall (state.walls reference)
       state.walls.forEach(wall => {
-        const subSegs = getVisibleSubSegments(state.soundSource, wall, state.walls);
+        const candidateWalls = wall.visibleWalls && wall.visibleWalls.length > 0
+          ? wall.visibleWalls : state.walls;
+        const subSegs = getVisibleSubSegments(state.soundSource, wall, candidateWalls);
         subSegs.forEach(seg => {
           state.visibleSegments.push(seg);
-          queue.push({
-            source: state.soundSource,
-            wall: seg,
-            originalWall: wall,          // FIX Bug 2/8: track original wall reference
-            reflectionLevel: 0,
-            virtualSource: null
-          });
+          queue.push({ source: state.soundSource, wall: seg, originalWall: wall, reflectionLevel: 0, virtualSource: null });
         });
       });
 
       while (queue.length > 0) {
         const { source, wall, originalWall, reflectionLevel, virtualSource } = queue.shift();
+        const result = computeReflections(source, state.pulseRadius, wall, reflectionLevel, virtualSource, originalWall);
 
-        const result = computeReflections(
-          source, state.pulseRadius, wall, reflectionLevel, virtualSource, originalWall
-        );
-
-        if (reflectionLevel < state.maxReflections) {
-          state.arcs.push(...result.arcs);
-        }
+        if (reflectionLevel < state.maxReflections) state.arcs.push(...result.arcs);
         state.sources.push(...result.sources);
 
         result.sources.forEach(newSource => {
-          state.walls.forEach(nextWall => {
-            // Pass newSource as the virtualSource; it carries originalWall + cone
-            const subSegs = getVisibleSubSegments(newSource.center, nextWall, state.walls, newSource);
+          const reflectorWall = newSource.originalWall;
+          const candidates = reflectorWall.visibleWalls && reflectorWall.visibleWalls.length > 0
+            ? reflectorWall.visibleWalls : state.walls;
+          candidates.forEach(nextWall => {
+            const subSegs = getVisibleSubSegments(newSource.center, nextWall, candidates, newSource);
             subSegs.forEach(seg => {
               queue.push({
                 source: newSource.center,
                 wall: seg,
-                originalWall: nextWall,    // FIX: always a state.walls reference
+                originalWall: nextWall,
                 reflectionLevel: reflectionLevel + 1,
-                // FIX Bug 2/8: pass originalWall + cone; drop the sub-segment `wall`
-                virtualSource: {
-                  originalWall: newSource.originalWall,
-                  cone: newSource.cone
-                }
+                virtualSource: { originalWall: newSource.originalWall, cone: newSource.cone }
               });
             });
           });
@@ -646,12 +697,10 @@
       ctx.strokeStyle = color;
       ctx.lineWidth = 2;
       ctx.beginPath();
-
       const start = normalizeAngle(startAngle);
       const end   = normalizeAngle(endAngle);
       const diff  = normalizeAngle(end - start);
       const counterclockwise = diff > Math.PI;
-
       ctx.arc(center.x, center.y, radius, startAngle, endAngle, counterclockwise);
       ctx.stroke();
     }
@@ -663,48 +712,45 @@
       ctx.arc(source.center.x, source.center.y, 6, 0, Math.PI * 2);
       ctx.stroke();
       ctx.beginPath();
-      const startDir = source.cone.startDir;
-      const endDir   = source.cone.endDir;
       const length = 12;
       ctx.moveTo(source.center.x, source.center.y);
-      ctx.lineTo(source.center.x + startDir.x * length, source.center.y + startDir.y * length);
+      ctx.lineTo(source.center.x + source.cone.startDir.x * length, source.center.y + source.cone.startDir.y * length);
       ctx.moveTo(source.center.x, source.center.y);
-      ctx.lineTo(source.center.x + endDir.x * length, source.center.y + endDir.y * length);
+      ctx.lineTo(source.center.x + source.cone.endDir.x * length, source.center.y + source.cone.endDir.y * length);
       ctx.closePath();
       ctx.stroke();
     }
 
     function render() {
-      if (!state.pulseRadius) {
-        return
-      }
+      if (!state.pulseRadius) return;
+      updateFps();
+
       ctx.fillStyle = '#0a0a0a';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-      state.walls.forEach((wall, i) => {
-        drawWall(wall, i === state.selectedWall);
-      });
+      if (state.showVisGraph) drawVisibilityGraph();
 
-      if (state.showVisibility) {
-        state.visibleSegments.forEach(seg => drawVisibleSegment(seg));
-      }
+      state.walls.forEach((wall, i) => drawWall(wall, i === state.selectedWall));
+
+      if (state.showVisibility) state.visibleSegments.forEach(seg => drawVisibleSegment(seg));
 
       ctx.fillStyle = '#ff3333';
       ctx.beginPath();
       ctx.arc(state.soundSource.x, state.soundSource.y, 6, 0, Math.PI * 2);
       ctx.fill();
 
-      state.sources.forEach(source => {
-        drawVirtualSource(source);
-      });
+      state.sources.forEach(source => drawVirtualSource(source));
+      state.arcs.forEach(arc => drawArc(arc.center, arc.radius, arc.startAngle, arc.endAngle, arc.color));
 
-      state.arcs.forEach(arc => {
-        drawArc(arc.center, arc.radius, arc.startAngle, arc.endAngle, arc.color);
-      });
+      const avgVisWalls = state.walls.length > 0
+        ? (state.walls.reduce((s, w) => s + (w.visibleWalls ? w.visibleWalls.length : 0), 0) / state.walls.length).toFixed(1)
+        : '—';
 
       document.getElementById('info').innerHTML = `
+        FPS: <b>${getFps().toFixed(1)}</b> |
         Source: (${state.soundSource.x.toFixed(0)}, ${state.soundSource.y.toFixed(0)}) |
         Walls: ${state.walls.length} |
+        Avg visible walls/wall: ${avgVisWalls} |
         Visible segments: ${state.visibleSegments.length} |
         Pulse Radius: ${state.pulseRadius.toFixed(0)} |
         Arcs: ${state.arcs.length} |
@@ -713,24 +759,19 @@
       `;
     }
 
-    const roomW = 42, roomH = 40;
-    const margin = 0.5;
-    const roomScale = Math.min(canvas.width * (1 - margin) / roomW, canvas.height * (1 - margin) / roomH);
-    const roomCx = canvas.width  / 2;
-    const roomCy = canvas.height / 2;
-
+    // === ROOM SETUP ===
     function w(x, z) { return vec2(roomCx + x * roomScale, roomCy - z * roomScale); }
 
     const testRoomWalls = [
       { a: w(-21, 20),  b: w( 21, 20)  },
       { a: w( 21,-20),  b: w(-21,-20)  },
-      { a: w( 20, 20),  b: w( 20,-20), debug: 'East'  },
-      { a: w(-20,-20),  b: w(-20, 20), debug: 'West'  },
+      { a: w( 20, 20),  b: w( 20,-20)  },
+      { a: w(-20,-20),  b: w(-20, 20)  },
       { a: w(  8, 12),  b: w(  8,  4)  },
       { a: w(  9, 12),  b: w(  8, 12)  },
       { a: w(  9,  4),  b: w(  9, 12)  },
       { a: w(  8,  4),  b: w(  9,  4)  },
-      { a: w( -5, -5),  b: w(-15, -5), debug: 'Target'  },
+      { a: w( -5, -5),  b: w(-15, -5)  },
       { a: w(-15, -5),  b: w(-15, -6)  },
       { a: w(-15, -6),  b: w( -5, -6)  },
       { a: w( -5, -6),  b: w( -5, -5)  },
@@ -744,19 +785,23 @@
       return walls.map(wall => {
         const AB = sub(wall.b, wall.a);
         const normal = norm(vec2(-AB.y, AB.x));
-        return { ...wall, normal };
+        return { ...wall, normal, visibleWalls: [] };
       });
     }
 
     function bakeWalls(walls) {
-      let w1 = computeNormals(walls);
-      return w1;
+      return computeNormals(walls);
     }
 
+    // Init
     state.walls.push(...bakeWalls(testRoomWalls));
     state.soundSource = w(0, 0);
 
-    render();
+    rebakeVisibility(state.walls).then(() => {
+      // Auto-pulse once baking is done
+      state.pulseRadius = state.maxRadius;
+      animate();
+    });
   </script>
 </body>
 </html>
